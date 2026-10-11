@@ -136,11 +136,20 @@ startup, so `THMHwyMonitor` and `HighwayTools` are registered without a separate
 Highway", `THMAddon.PVP` = "THM PVP") via `onRegisterCategories()`. `THMTab` is a separate,
 addon-specific settings screen — don't confuse the two when adding a new module's config surface.
 
+**Highway restock inventory:** Offhand refills preserve managed hotbar slots. Keep the EChest reserve outside the hand used for packet-only replacement. Container targets round standing Y like the blockade iterators; single EChests need a clear lid.
+
+**Axis Viewer:** Nether highways include XaeroPlus rings, diamonds, the 50k grid, and 125k extensions.
+Clip lines to the render camera's horizontal render distance before calling `RenderUtilsTHM`; reuse clipping scratch storage.
+
 **Online player names:** `utils/server/OnlinePlayers.getNames()` merges known profiles with fresh
 `/msg ` completion names for HUDs, friend sync, and KitBot. Requests are shared and demand-driven
 (every 10 seconds); names expire after 30 seconds and clear on disconnect or connection changes.
 Use real profiles/entities for UUIDs, skins, ping, and world operations. `isOnline()` returns null
 when an absent player cannot be checked against fresh completion.
+
+**Anarchy join:** `AnarchyJoinMixin` sends an empty `anarchymod:join` packet directly after
+`ClientPacketListener.handleLogin` on recognized anarchy hosts, unless AnarchyMod is installed.
+No Fabric payload registration is needed. `BlockedServersMixin` bypasses Mojang's blocklist.
 
 **Server diagnostics:** `.serverinfo` passively samples keepalives and world-time packets.
 `utils/server/ServerTelemetry` keeps bounded clock/TPS samples. Uptime is a host-clock estimate,
@@ -151,6 +160,7 @@ not a complete installed-plugin list. Do not send discovery commands or payload 
 **Crystal Aura:** `modules/CrystalAura` ports Lambda's opportunity scoring and prediction modes. Its visible title is THMcrystal aura; `thmcrystal-aura` keeps Meteor's registry intact. Async work stays bounded and runs world operations on the client thread. Source and adaptations: `docs/crystal-aura-lambda-port.md`.
 
 **Chunk refresh recovery:** `THMHwyMonitor` uses Baritone backsteps and `ChunkResync` to lower and restore the reported view distance. Resume requires server unload/reload evidence; never delete local chunks to force a resend. Vanilla clamps the server-side radius to 2.
+Retreat uses the server's reported radius plus its tracking margin; travel and hold timeouts scale with distance.
 
 **Server block updates:** `ClientLevelBlockUpdateMixin` handles Speedmine rebreak and Surround
 replacement on the client thread before world application. Prediction retains the incoming state for rollback.

@@ -22,8 +22,6 @@ import meteordevelopment.meteorclient.utils.notebot.decoder.SongDecoders;
 import meteordevelopment.meteorclient.utils.render.color.Color;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
-import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.metadata.ModMetadata;
 import net.minecraft.SharedConstants;
@@ -37,7 +35,6 @@ import xyz.thm.addon.system.THMTab;
 import xyz.thm.addon.utils.*;
 import xyz.thm.addon.utils.kitbot.KitbotAvailabilityTracker;
 import xyz.thm.addon.utils.kitbot.KitbotChatRouter;
-import xyz.thm.addon.utils.server.JoinPayload;
 import xyz.thm.addon.utils.server.OnlinePlayers;
 import xyz.thm.addon.utils.server.ServerReconnectService;
 import xyz.thm.addon.utils.server.ServerStatusHandler;
@@ -72,21 +69,6 @@ public class THMAddon extends MeteorAddon implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         ClientTickEvents.END_CLIENT_TICK.register(AddonUpdater::promptOnTitle);
-        if (!FabricLoader.getInstance().isModLoaded("anarchymod")) {
-            try {
-                PayloadTypeRegistry.serverboundPlay().register(JoinPayload.ID, JoinPayload.CODEC);
-                ClientPlayConnectionEvents.JOIN.register((listener, sender, client) -> {
-                    if (!THMUtils.isNot6B6T()) {
-                        sender.sendPacket(new JoinPayload());
-                        LOG.info("Join payload sent.");
-                    } else {
-                        LOG.info("Join payload not sent.");
-                    }
-                });
-            } catch (Exception e) {
-                LOG.error("Failed to send the Packet:", e);
-            }
-        }
     }
 
     @Override

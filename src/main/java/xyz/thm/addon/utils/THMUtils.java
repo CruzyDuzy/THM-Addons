@@ -421,8 +421,9 @@ public class THMUtils {
                 JsonArray domainsJson = root == null ? null : root.getAsJsonArray("domains");
                 if (domainsJson == null) return;
 
-                Set<String> domains = new java.util.HashSet<>();
+                Set<String> domains = new java.util.HashSet<>(anarchyModDomains);
                 for (var element : domainsJson) {
+                    if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString()) continue;
                     String domain = element.getAsString().trim().toLowerCase(Locale.ROOT);
                     if (domain.startsWith("*.")) domain = domain.substring(2);
                     if (!domain.isEmpty()) domains.add(domain);
@@ -438,16 +439,33 @@ public class THMUtils {
         assert mc.level != null;
         if (FabricLoader.getInstance().isDevelopmentEnvironment()) return false; // Bypass check in dev environment
         if (mc.hasSingleplayerServer()) return true;
-        refreshAnarchyModDomainsAsync();
         ServerData server = mc.getCurrentServer();
         if (server == null) return false;
-        String address = server.ip == null ? "" : server.ip.trim().toLowerCase(Locale.ROOT);
-        if (address.isEmpty()) return false;
+        if (server.ip == null || server.ip.isBlank()) return false;
+        return !isAnarchyServer(server.ip);
+    }
+
+    public static boolean isAnarchyServer(String address) {
+        refreshAnarchyModDomainsAsync();
+        return matchesAnarchyServer(address, anarchyModDomains);
+    }
+
+    static boolean matchesAnarchyServer(String address, Set<String> domains) {
+        if (address == null) return false;
+        address = address.trim().toLowerCase(Locale.ROOT);
         int colon = address.indexOf(':');
+        if (colon >= 0) {
+            try {
+                int port = Integer.parseInt(address.substring(colon + 1));
+                if (port < 1 || port > 65535) return false;
+            } catch (NumberFormatException invalidPort) {
+                return false;
+            }
+        }
         String host = colon >= 0 ? address.substring(0, colon) : address;
         while (host.endsWith(".")) host = host.substring(0, host.length() - 1);
         String finalHost = host;
-        return anarchyModDomains.stream().noneMatch(finalHost::endsWith);
+        return domains.stream().anyMatch(domain -> finalHost.equals(domain) || finalHost.endsWith("." + domain));
     }
     public static boolean checkThreshold(ItemStack i, double threshold) {
         return getDamage(i) <= threshold;

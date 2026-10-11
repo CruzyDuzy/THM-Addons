@@ -36,12 +36,14 @@ Restock and KitBot enclosures use Netherrack. With `offhand-build`, it is tempor
 
 TPS safety enclosures also use Netherrack. After TPS recovers, the builder removes its enclosure blocks on all four sides before moving forward. Existing nearby blocks are left alone.
 
-An active HotbarManager keeps priority for configured slots, even with `Manage-hotbar` off. Its sorting waits during restocking while HighwayBuilder uses those slots directly.
+An active HotbarManager keeps priority for configured slots, even with `Manage-hotbar` off. Offhand refills use spare inventory stacks first and leave at least one item in managed slots. Its sorting waits during restocking while HighwayBuilder uses those slots directly.
 
 Restock cleanup keeps the held tool when another tool has the same mining score. Offhand and packet-build loadouts let the restock state control the main hand while containers are being removed.
 
 Offhand restocks keep their supplies through recovery instead of refilling with obsidian. Chest,
-totem and tool swaps work with a full inventory, including `minimum-empty-slots` set to `0`.
+totem and tool swaps work with a full inventory, including `minimum-empty-slots` set to `0`. EChest mining keeps the configured reserve outside the offhand so predictive replacement cannot consume it. If there is no room to separate an existing offhand stack, normal placement respects the reserve and predictive replacement waits.
+
+Single EChest restocks use the same standing height as the enclosure and clear solid blocks above the lid before opening.
 
 ## Quick Cheat Sheet
 
@@ -149,13 +151,14 @@ totem and tool swaps work with a full inventory, including `minimum-empty-slots`
 | Setting | Default / Options | What to change it for |
 | --- | --- | --- |
 | `kitbot-update-on-finish` | `true` | Sends `$update` to KitBot1 with the current direction when the module finishes, then disconnects. |
-| `kitbot-periodic-update` | `true` | Sends `$update` every 60 minutes while building, deferred during restock. |
+| `kitbot-periodic-update` | `true` | Sends periodic `$update` requests while building, deferred during restock. |
+| `kitbot-update-interval-minutes` | `30`, minimum `1`, slider `1-120` | Minutes between automatic updates; changing it restarts the countdown unless an update is pending after restock. |
 
 ### Highway Monitor Recovery
 
-**ChunkRefresh** pauses HighwayBuilder, Timer, and Speed, then walks one chunk backward. It reports a view distance of 2 while checking for a server unload of the stalled chunk. If that chunk remains tracked, it extends the retreat to four chunks, restores the latest reported options, and returns to the first backstep. It resumes only after receiving fresh chunk data and finding that chunk loaded. Baritone cannot break or place during this recovery; its settings are restored afterward. Failures stop Baritone, restore the distance, and leave HighwayBuilder paused without an automatic disconnect. This mode also works with auto-reconnect off.
+**ChunkRefresh** pauses HighwayBuilder, Timer, and Speed, then walks one chunk backward. It reports a view distance of 2 while checking for a server unload of the stalled chunk. If that chunk remains tracked, it extends the retreat beyond the server's reported radius plus its tracking margin, with a minimum of four chunks. Travel timeouts scale with distance. Once the server confirms an unload, it stops retreating, restores the latest reported options, and returns to the first backstep. It resumes only after receiving fresh chunk data and finding that chunk loaded. Baritone cannot break or place during this recovery; its settings are restored afterward. Failures stop Baritone, restore the distance, and leave HighwayBuilder paused without an automatic disconnect. This mode also works with auto-reconnect off.
 
-Vanilla 26.2 clamps the client request to a server-side minimum of 2 and retains a tracking margin. An unchanged options packet or a local chunk deletion cannot force a resend. The recovery relies on the server honoring distance changes and chunk-unload packets; servers with larger minimums or fixed view distances may reject this approach. Diagonal backsteps move one chunk along each travel axis. F3+A+S alone refreshes outer chunks and cannot guarantee nearby chunks are reloaded.
+Vanilla 26.2 clamps the client request to a server-side minimum of 2 and retains a tracking margin. An unchanged options packet or a local chunk deletion cannot force a resend. A server that ignores the lower distance requires a longer retreat beyond its reported radius. The recovery still requires server unload and replacement packets. Diagonal backsteps move one chunk along each travel axis. F3+A+S alone refreshes outer chunks and cannot guarantee nearby chunks are reloaded.
 
 | Setting | Default / Range | What to change it for |
 | --- | --- | --- |
@@ -282,7 +285,8 @@ Vanilla 26.2 clamps the client request to a server-side minimum of 2 and retains
 | Setting | Default / Range / Options | Visible when | Behavior |
 | --- | --- | --- | --- |
 | `kitbot-update-on-finish` | `true` | Always | Sends `$update` to KitBot1 with the current highway direction when the module finishes, waits for KitBot to teleport, then disconnects. |
-| `kitbot-periodic-update` | `true` | Always | Sends `$update` to KitBot1 every 60 minutes while building without stopping; delayed until restock completes. |
+| `kitbot-periodic-update` | `true` | Always | Sends periodic `$update` requests to KitBot1 while building; delayed until restock completes. |
+| `kitbot-update-interval-minutes` | `30`, minimum `1`, slider `1-120` | `kitbot-periodic-update` is on | Minutes between automatic updates; changing it restarts the countdown unless an update is pending after restock. |
 
 ### THM-HighwayBuilder: Experimental
 

@@ -9,6 +9,7 @@ package xyz.thm.addon.modules;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ChunkTrackingView;
 import net.minecraft.world.level.ChunkPos;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -18,23 +19,49 @@ class THMHwyMonitorTest {
     @ParameterizedTest
     @CsvSource({"1,0", "-1,0", "0,1", "0,-1", "1,1", "1,-1", "-1,1", "-1,-1"})
     void retreatClearsServerTrackingAndReturnsWithinTheOriginalDistance(int dx, int dz) {
-        for (BlockPos start : new BlockPos[] {new BlockPos(-1, 120, -17), new BlockPos(15, 120, 32)}) {
-            ChunkPos original = ChunkPos.containing(start);
-            BlockPos first = THMHwyMonitor.chunkBackstepGoal(start, dx, dz, 1);
-            BlockPos far = THMHwyMonitor.chunkBackstepGoal(start, dx, dz, 4);
-            ChunkPos firstChunk = ChunkPos.containing(first);
-            ChunkPos farChunk = ChunkPos.containing(far);
-            assertEquals(original.x() - dx, firstChunk.x());
-            assertEquals(original.z() - dz, firstChunk.z());
-            assertEquals(start.getY(), far.getY());
-            assertTrue(ChunkTrackingView.of(firstChunk, 2).contains(original));
-            var dipped = ChunkTrackingView.of(farChunk, 2);
-            assertFalse(dipped.contains(original));
-            for (int x = -8; x <= 8; x++) {
-                for (int z = -8; z <= 8; z++) {
-                    if (x * dx + z * dz >= 0) assertFalse(dipped.contains(original.x() + x, original.z() + z));
+        for (int radius : new int[] {2, 4, 6, 16, 32}) {
+            for (BlockPos start : new BlockPos[] {new BlockPos(-1, 120, -17), new BlockPos(15, 120, 32)}) {
+                ChunkPos original = ChunkPos.containing(start);
+                BlockPos first = THMHwyMonitor.chunkBackstepGoal(start, dx, dz, 1);
+                BlockPos far = THMHwyMonitor.chunkRefreshFarGoal(start, dx, dz, radius);
+                ChunkPos firstChunk = ChunkPos.containing(first);
+                ChunkPos farChunk = ChunkPos.containing(far);
+                assertEquals(original.x() - dx, firstChunk.x());
+                assertEquals(original.z() - dz, firstChunk.z());
+                assertEquals(start.getY(), far.getY());
+                assertTrue(ChunkTrackingView.of(firstChunk, radius).contains(original));
+                var dipped = ChunkTrackingView.of(farChunk, radius);
+                assertFalse(dipped.contains(original));
+                for (int x = -8; x <= 8; x++) {
+                    for (int z = -8; z <= 8; z++) {
+                        if (x * dx + z * dz >= 0) assertFalse(dipped.contains(original.x() + x, original.z() + z));
+                    }
                 }
             }
+        }
+    }
+
+    @Test void fourChunksDoNotClearAFixedSixChunkServerRadius() {
+        BlockPos start = new BlockPos(15, 120, 32);
+        ChunkPos original = ChunkPos.containing(start);
+        ChunkPos oldGoal = ChunkPos.containing(THMHwyMonitor.chunkBackstepGoal(start, 1, 0, 4));
+        assertTrue(ChunkTrackingView.of(oldGoal, 6).contains(original));
+        ChunkPos goal = ChunkPos.containing(THMHwyMonitor.chunkRefreshFarGoal(start, 1, 0, 6));
+        assertFalse(ChunkTrackingView.of(goal, 6).contains(original));
+    }
+
+    @Test void replacementBeforeTheNextTickDoesNotLoseUnloadConfirmation() {
+        assertTrue(THMHwyMonitor.canReturnFromChunkRefresh(true, true, true));
+        assertTrue(THMHwyMonitor.canReturnFromChunkRefresh(true, false, false));
+        assertFalse(THMHwyMonitor.canReturnFromChunkRefresh(true, false, true));
+        assertFalse(THMHwyMonitor.canReturnFromChunkRefresh(false, false, false));
+        assertFalse(THMHwyMonitor.canReturnFromChunkRefresh(false, true, true));
+    }
+
+    @Test void longerRetreatsAndReturnsHaveTimeToCompleteAtWalkingSpeed() {
+        assertEquals(20 * 20, THMHwyMonitor.chunkRefreshTravelTimeoutTicks(16));
+        for (double distance : new double[] {128, 256, 544}) {
+            assertTrue(THMHwyMonitor.chunkRefreshTravelTimeoutTicks(distance) > distance / 3 * 20);
         }
     }
 }

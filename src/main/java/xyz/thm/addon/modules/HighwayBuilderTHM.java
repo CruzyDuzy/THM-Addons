@@ -134,6 +134,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.IntPredicate;
 import java.util.function.IntToDoubleFunction;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -849,8 +850,23 @@ public class HighwayBuilderTHM extends Module {
 
     private final Setting<Boolean> kitbotPeriodicUpdate = sgKitBotIntegration.add(new BoolSetting.Builder()
         .name("kitbot-periodic-update")
-        .description("Sends $update to KitBot1 every hour while building.")
+        .description("Periodically sends $update to KitBot1 while building.")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> kitbotUpdateIntervalMinutes = sgKitBotIntegration.add(new IntSetting.Builder()
+        .name("kitbot-update-interval-minutes")
+        .description("Minutes between automatic KitBot1 updates.")
+        .defaultValue(30)
+        .min(1)
+        .sliderRange(1, 120)
+        .visible(kitbotPeriodicUpdate::get)
+        .onChanged(value -> {
+            if (isActive() && mc.level != null && !this.kitbotPeriodicUpdatePending) {
+                this.kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + value * 1200L;
+            }
+        })
         .build()
     );
 
@@ -2028,7 +2044,6 @@ public class HighwayBuilderTHM extends Module {
     private static final int KITBOT_COLLECT_DELAY_TICKS = 40; // 2s
     // Cap on kitbot-wait-until-gone, so a bot that parks next to you can't stall the restock forever.
     private static final int KITBOT_DEPARTURE_WAIT_TICKS = 600; // 30s
-    private static final long KITBOT_PERIODIC_UPDATE_INTERVAL_TICKS = 72000L; // 1 hour at 20 tps
     private static final double CENTER_SPEED_OVERRIDE = 0.6;
     private static final int CENTER_SPEED_RESTORE_RETRY_WINDOW_TICKS = 60;
     private static final double CENTER_TELEPORT_MAX_HORIZONTAL_DISTANCE = 4.0;
@@ -2674,7 +2689,7 @@ public class HighwayBuilderTHM extends Module {
         nextAdvertisementAtTick = 0L;
         kitbotPeriodicUpdateActive = false;
         kitbotPeriodicUpdatePending = false;
-        kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + KITBOT_PERIODIC_UPDATE_INTERVAL_TICKS;
+        kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + kitbotUpdateIntervalMinutes.get() * 1200L;
         forwardSchedulerDebugFileErrorLogged = false;
         resetAdaptivePlacement();
         resetGhostBlockCheck();
@@ -3421,7 +3436,7 @@ public class HighwayBuilderTHM extends Module {
 
         if (isRestockState(state)) {
             kitbotPeriodicUpdatePending = true;
-            kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + KITBOT_PERIODIC_UPDATE_INTERVAL_TICKS;
+            kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + kitbotUpdateIntervalMinutes.get() * 1200L;
             return;
         }
 
@@ -3431,13 +3446,13 @@ public class HighwayBuilderTHM extends Module {
     private void sendKitbotPeriodicUpdate() {
         if (!isOnOfficialHighway() || dir == null || mc.level == null) {
             kitbotPeriodicUpdatePending = false;
-            kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + KITBOT_PERIODIC_UPDATE_INTERVAL_TICKS;
+            kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + kitbotUpdateIntervalMinutes.get() * 1200L;
             return;
         }
         String kitbotDir = directionToKitbotCommand(dir);
         if (kitbotDir == null) {
             kitbotPeriodicUpdatePending = false;
-            kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + KITBOT_PERIODIC_UPDATE_INTERVAL_TICKS;
+            kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + kitbotUpdateIntervalMinutes.get() * 1200L;
             return;
         }
         ChatUtils.sendPlayerMsg("/msg KitBot1 $update " + kitbotDir);
@@ -3446,7 +3461,7 @@ public class HighwayBuilderTHM extends Module {
         kitbotPeriodicUpdateStartTick = mc.level.getGameTime();
         kitbotPeriodicUpdateTpAccepted = false;
         kitbotPeriodicUpdatePending = false;
-        kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + KITBOT_PERIODIC_UPDATE_INTERVAL_TICKS;
+        kitbotPeriodicUpdateNextTick = mc.level.getGameTime() + kitbotUpdateIntervalMinutes.get() * 1200L;
     }
 
     private void buildKitbotUpdateEnclosure() {
@@ -6290,7 +6305,7 @@ public class HighwayBuilderTHM extends Module {
     private BlockPos doubleChestBlockadePos(State placementState) {
         if (placementState != State.PlaceShulkerBlockade || !isDoubleChestBlockadeActive() || dir == null || mc.player == null || mc.level == null) return null;
         HorizontalDirection containerDir = getRestockContainerDirection(dir);
-        BlockPos container = offsetBlockPos(mc.player.blockPosition(), containerDir);
+        BlockPos container = offsetBlockPos(restockAnchor(mc.player.getX(), mc.player.getY(), mc.player.getZ()), containerDir);
         BlockPos target = offsetBlockPos(container, getKitbotExpansionDirection(containerDir));
         return mc.level.getBlockState(target).getBlock() == Blocks.ENDER_CHEST || shouldBuildDoubleChestForRestock(placementState)
             ? target : null;
@@ -7607,8 +7622,9 @@ public class HighwayBuilderTHM extends Module {
             || !mc.level.getWorldBorder().isWithinBounds(pos)) return;
 
         RestockTask.RestockSession session = restockTask.getSession();
-        int reserve = session == null ? saveEchests.get() : session.saveEchestsReserve;
-        if (countLooseInventoryEnderChests() <= reserve) return;
+        int reserve = session == null ? saveEchests.get() : Math.max(saveEchests.get(), session.saveEchestsReserve);
+        // Packet-only uses cannot consume the reserve kept outside the offhand.
+        if (countLooseInventoryEnderChests() - mc.player.getOffhandItem().getCount() < reserve) return;
 
         BlockPos support = pos.below();
         if (mc.level.getBlockState(support).canBeReplaced()) return;
@@ -7698,28 +7714,113 @@ public class HighwayBuilderTHM extends Module {
             findRestockEnclosureNetherrackSlot();
         } else if (wantsEnderChestOffhand()) {
             if (!offhandHoldsEnderChest()) {
-                FindItemResult chest = InvUtils.find(stack -> stack.getItem() == Items.ENDER_CHEST, 0, 35);
-                if (chest.found()) moveLoadoutToOffhand(chest.slot());
+                int slot = findOffhandSupplySlot(stack -> stack.is(Items.ENDER_CHEST));
+                if (slot != -1) moveSupplyToOffhand(slot);
             }
         } else if (!restockTask.isSequenceActive() && !isRestockState(state)) {
             ItemStack offhand = mc.player.getOffhandItem();
             if (!offhandHoldsPlaceable()) {
                 // Fill the offhand (search hotbar + main inv, i.e. not the offhand slot itself).
-                FindItemResult obby = InvUtils.find(this::isPlaceableBlockStack, 0, 35);
-                if (obby.found()) moveLoadoutToOffhand(obby.slot());
+                int slot = findOffhandSupplySlot(this::isPlaceableBlockStack);
+                if (slot != -1) moveSupplyToOffhand(slot);
             } else if (offhand.getCount() <= OFFHAND_BLOCK_TOPUP_AT && offhand.getCount() < offhand.getMaxStackSize()) {
                 // Top up a partial stack instead of waiting for it to run out. Same item only:
                 // InvUtils.move() is a two-click pickup/place, which merges matching stacks but
                 // *swaps* different ones — pulling netherrack onto offhand obsidian would park the
                 // obsidian back in the inventory.
-                FindItemResult more = InvUtils.find(s -> s.getItem() == offhand.getItem(), 0, 35);
-                if (more.found()) moveLoadoutToOffhand(more.slot());
+                int slot = findOffhandSupplySlot(s -> ItemStack.isSameItemSameComponents(s, offhand));
+                if (slot != -1) moveSupplyToOffhand(slot);
             }
 
             restockOffhandBlocksIfLow();
         }
 
         if (!ownsRestockInventory() || wantsEnderChestOffhand()) ensurePickaxeInMainHand();
+    }
+
+    private int findOffhandSupplySlot(Predicate<ItemStack> predicate) {
+        return selectOffhandSupplySlot(36, i -> {
+            ItemStack stack = mc.player.getInventory().getItem(i);
+            return predicate.test(stack) && (!isHotbarSlotReservedByManager(i) || stack.getCount() > 1);
+        }, this::isHotbarSlotReservedByManager);
+    }
+
+    static int selectOffhandSupplySlot(int size, IntPredicate matches, IntPredicate reserved) {
+        int fallback = -1;
+        for (int offset = 0; offset < size; offset++) {
+            int slot = (offset + 9) % size;
+            if (!matches.test(slot)) continue;
+            if (!reserved.test(slot)) return slot;
+            if (fallback == -1) fallback = slot;
+        }
+        return fallback;
+    }
+
+    private boolean moveSupplyToOffhand(int slot) {
+        if (mc.gameMode == null) return false;
+        ItemStack source = mc.player.getInventory().getItem(slot);
+        int reserve = wantsEnderChestOffhand() && source.is(Items.ENDER_CHEST) ? saveEchests.get() : 0;
+        int otherChests = reserve > 0 ? countLooseInventoryEnderChests() - source.getCount()
+            - (offhandHoldsEnderChest() ? mc.player.getOffhandItem().getCount() : 0) : 0;
+        int keep = offhandSupplyReserve(otherChests, reserve, isHotbarSlotReservedByManager(slot));
+        if (keep == 0) return moveLoadoutToOffhand(slot);
+        if (source.getCount() <= keep) return false;
+        if (mc.player.containerMenu != mc.player.inventoryMenu || !mc.player.containerMenu.getCarried().isEmpty()) return false;
+        ItemStack expected = source.copy();
+        ItemStack offhand = mc.player.getOffhandItem();
+        if (!offhand.isEmpty() && !ItemStack.isSameItemSameComponents(source, offhand)) {
+            int empty = -1;
+            for (int i = 9; i < 36; i++) {
+                if (mc.player.getInventory().getItem(i).isEmpty()) {
+                    empty = i;
+                    break;
+                }
+            }
+            if (empty == -1 || !moveLoadoutToOffhand(empty)) return false;
+        }
+
+        // Move one item without emptying a managed slot or leaving an item on the cursor.
+        moveOneInventoryItem(slot, SlotUtils.OFFHAND);
+        return ItemStack.isSameItemSameComponents(expected, mc.player.getOffhandItem());
+    }
+
+    static int offhandSupplyReserve(int otherInventoryChests, int chestReserve, boolean managed) {
+        return Math.max(managed ? 1 : 0, Math.max(chestReserve - otherInventoryChests, 0));
+    }
+
+    private boolean protectOffhandEChestReserve(int reserve) {
+        int outside = countLooseInventoryEnderChests() - mc.player.getOffhandItem().getCount();
+        if (outside >= reserve) return true;
+        if (mc.player.containerMenu != mc.player.inventoryMenu || !mc.player.containerMenu.getCarried().isEmpty()) return false;
+        int destination = getPreferredManagedHotbarSlot(Items.ENDER_CHEST);
+        if (destination == -1 || !canReceiveOffhandChest(destination)) {
+            destination = -1;
+            for (int i = 0; i < 36; i++) {
+                if (canReceiveOffhandChest(i) && !isHotbarSlotReservedByManager(i)) {
+                    destination = i;
+                    break;
+                }
+            }
+        }
+        // A full inventory can still use vanilla stack prediction; packet-only replacement stays disabled.
+        if (destination == -1) return true;
+
+        moveOneInventoryItem(SlotUtils.OFFHAND, destination);
+        return false;
+    }
+
+    private void moveOneInventoryItem(int source, int destination) {
+        int sourceId = SlotUtils.indexToId(source);
+        int destinationId = SlotUtils.indexToId(destination);
+        mc.gameMode.handleContainerInput(mc.player.inventoryMenu.containerId, sourceId, 0, ContainerInput.PICKUP, mc.player);
+        mc.gameMode.handleContainerInput(mc.player.inventoryMenu.containerId, destinationId, 1, ContainerInput.PICKUP, mc.player);
+        mc.gameMode.handleContainerInput(mc.player.inventoryMenu.containerId, sourceId, 0, ContainerInput.PICKUP, mc.player);
+    }
+
+    private boolean canReceiveOffhandChest(int slot) {
+        ItemStack stack = mc.player.getInventory().getItem(slot);
+        return stack.isEmpty() || ItemStack.isSameItemSameComponents(stack, mc.player.getOffhandItem())
+            && stack.getCount() < stack.getMaxStackSize();
     }
 
     private boolean moveLoadoutToOffhand(int slot) {
@@ -7739,6 +7840,33 @@ public class HighwayBuilderTHM extends Module {
                 slotId, SlotUtils.OFFHAND, ContainerInput.SWAP, mc.player);
         }
         return ItemStack.isSameItemSameComponents(expected, mc.player.getOffhandItem());
+    }
+
+    static BlockPos restockAnchor(double x, double y, double z) {
+        // Blockade iterators round the standing height instead of flooring slab/chest tops.
+        return BlockPos.containing(x, Math.round(y), z);
+    }
+
+    private void openRestockContainer(BlockPos pos) {
+        BlockPos lid = pos.above();
+        BlockState lidState = mc.level.getBlockState(lid);
+        if (mc.level.getBlockState(pos).is(Blocks.ENDER_CHEST) && lidState.isSolidRender()) {
+            if (breakTimer > 0 || count >= currentMineActionsThisTick()) return;
+            if (!safeCanBreak(lid, lidState)) {
+                error("Cannot open ender chest: the block above its lid cannot be mined.");
+                return;
+            }
+            int slot = State.Forward.findAndMoveBestToolToHotbar(this, lidState, false);
+            if (slot == -1) return;
+            if (slot != mc.player.getInventory().getSelectedSlot()) InvUtils.swap(slot, false);
+            tryMineBlock(lid, lidState, rotation.get().mine);
+            return;
+        }
+
+        Runnable open = () -> BlockUtils.interact(
+            new BlockHitResult(Vec3.atCenterOf(pos), Direction.UP, pos, false), InteractionHand.MAIN_HAND, true);
+        if (rotation.get().place) Rotations.rotate(Rotations.getYaw(pos), Rotations.getPitch(pos), open);
+        else open.run();
     }
 
     private boolean isRestockEnclosureOffhandState(State candidate) {
@@ -7822,7 +7950,13 @@ public class HighwayBuilderTHM extends Module {
         Predicate<ItemStack> usable = wantsEnderChestOffhand()
             ? this::passesEChestMiningPickaxeGuard : s -> s.is(ItemTags.PICKAXES);
         int sel = mc.player.getInventory().getSelectedSlot();
-        if (usable.test(mc.player.getInventory().getItem(sel))) return;
+        if (usable.test(mc.player.getInventory().getItem(sel))) {
+            int preferred = getPreferredManagedHotbarSlot(mc.player.getInventory().getItem(sel).getItem());
+            if (preferred != -1 && preferred != sel && State.Forward.swapInventoryToHotbar(this, sel, preferred)) {
+                InvUtils.swap(preferred, false);
+            }
+            return;
+        }
         FindItemResult pick = InvUtils.findInHotbar(usable);
         if (pick.found() && pick.isHotbar()) {
             InvUtils.swap(pick.slot(), false);
@@ -14974,10 +15108,7 @@ public class HighwayBuilderTHM extends Module {
 
                     // if we don't know what's in your echest, open it quickly while we have one available to check
                     if (!EChestMemory.isKnown()) {
-                        if (b.rotation.get().place) Rotations.rotate(Rotations.getYaw(bp), Rotations.getPitch(bp), () ->
-                            b.mc.gameMode.useItemOn(b.mc.player, InteractionHand.MAIN_HAND, new BlockHitResult(Vec3.atCenterOf(bp), Direction.UP, bp, false)));
-                        else b.mc.gameMode.useItemOn(b.mc.player, InteractionHand.MAIN_HAND, new BlockHitResult(Vec3.atCenterOf(bp), Direction.UP, bp, false));
-
+                        b.openRestockContainer(bp);
                         return;
                     }
 
@@ -15106,23 +15237,23 @@ public class HighwayBuilderTHM extends Module {
                             b.restockWatchdog.pauseHeartbeat("echest-offhand-totem");
                             return;
                         }
-                        FindItemResult chest = InvUtils.find(stack -> stack.is(Items.ENDER_CHEST), 0, 35);
-                        if (chest.found()) {
-                            if (!b.moveLoadoutToOffhand(chest.slot())) return;
+                        int chestSlot = b.findOffhandSupplySlot(stack -> stack.is(Items.ENDER_CHEST));
+                        if (chestSlot != -1 && b.moveSupplyToOffhand(chestSlot)) {
                             fromOffhand = b.offhandHoldsEnderChest();
-                            if (!fromOffhand) return;
                         }
                     }
-                    int slot = fromOffhand ? SlotUtils.OFFHAND : b.noSwapLoadout.get() ? -1
+                    int slot = fromOffhand ? SlotUtils.OFFHAND
                         : findAndMoveToHotbar(b, itemStack -> itemStack.is(Items.ENDER_CHEST));
                     RestockTask.RestockSession session = b.restockTask.getSession();
-                    int minimumRemainingEChests = session != null ? session.saveEchestsReserve : b.saveEchests.get();
-                    if (slot == -1 || countItem(b, stack -> stack.getItem().equals(Items.ENDER_CHEST)) <= minimumRemainingEChests) {
+                    int minimumRemainingEChests = session != null ? Math.max(b.saveEchests.get(), session.saveEchestsReserve) : b.saveEchests.get();
+                    int looseCount = countItem(b, stack -> stack.is(Items.ENDER_CHEST));
+                    if (slot == -1 || looseCount <= minimumRemainingEChests) {
                         b.restockTask.markCurrentSourceExhausted(RestockTask.SourcePhase.MineEnderChests);
                         stopTimerEnabled = true;
                         stopTimer = 40;
                         return;
                     }
+                    if (fromOffhand && !b.protectOffhandEChestReserve(minimumRemainingEChests)) return;
 
                     if (!first) primed = true;
 
@@ -17805,12 +17936,7 @@ public class HighwayBuilderTHM extends Module {
                     if (b.rotation.get().mine) Rotations.rotate(Rotations.getYaw(bp), Rotations.getPitch(bp), () -> BlockUtils.breakBlock(bp, true));
                     else BlockUtils.breakBlock(bp, true);
                 } else {
-                    if (b.rotation.get().place) {
-                        Rotations.rotate(Rotations.getYaw(bp), Rotations.getPitch(bp), () ->
-                            b.mc.gameMode.useItemOn(b.mc.player, InteractionHand.MAIN_HAND, new BlockHitResult(Vec3.atCenterOf(bp), Direction.UP, bp, false))
-                        );
-                    }
-                    else b.mc.gameMode.useItemOn(b.mc.player, InteractionHand.MAIN_HAND, new BlockHitResult(Vec3.atCenterOf(bp), Direction.UP, bp, false));
+                    b.openRestockContainer(bp);
 
                     delayTimer = b.inventoryDelay.get();
                 }
@@ -20062,7 +20188,7 @@ public class HighwayBuilderTHM extends Module {
                 blockadeType = b.getEffectiveBlockadeType();
                 sourceContainerPos = null;
                 if (b.mc.player != null) {
-                    anchorPos.set(b.mc.player.blockPosition());
+                    anchorPos.set(restockAnchor(b.mc.player.getX(), b.mc.player.getY(), b.mc.player.getZ()));
                     if (b.dir != null) {
                         HorizontalDirection containerDirection = b.getRestockContainerDirection(b.dir);
                         HorizontalDirection expansionDirection = b.getKitbotExpansionDirection(containerDirection);

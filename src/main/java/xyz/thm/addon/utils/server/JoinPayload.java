@@ -6,16 +6,16 @@
 
 package xyz.thm.addon.utils.server;
 
-import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
+import net.minecraft.network.protocol.common.custom.DiscardedPayload;
 import net.minecraft.resources.Identifier;
 
-public class JoinPayload implements CustomPacketPayload {
-    public static final CustomPacketPayload.Type<JoinPayload> ID = new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("anarchymod", "join"));
-    public static final StreamCodec<FriendlyByteBuf, JoinPayload> CODEC = StreamCodec.ofMember((payload, buf) -> {},buf -> new JoinPayload());
-    public static final CustomPacketPayload.TypeAndCodec<FriendlyByteBuf, JoinPayload> TYPE = new CustomPacketPayload.TypeAndCodec<>(ID, CODEC);
+public final class JoinPayload {
+    public static final Identifier ID = Identifier.fromNamespaceAndPath("anarchymod", "join");
 
-    @Override
-    public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {return ID;}
+    private JoinPayload() {}
+
+    public static ServerboundCustomPayloadPacket createPacket() {
+        return new ServerboundCustomPayloadPacket(new DiscardedPayload(ID));
+    }
 }

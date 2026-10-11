@@ -41,6 +41,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import xyz.thm.addon.THMAddon;
+import xyz.thm.addon.mixin.accessor.ClientPacketListenerAccessor;
 import xyz.thm.addon.settings.DescribedOption;
 import xyz.thm.addon.utils.ChunkResync;
 import xyz.thm.addon.utils.THMUtils;
@@ -70,6 +71,7 @@ public class THMHwyMonitor extends Module {
     private static final int BARITONE_RECOVERY_MAX_START_ATTEMPTS = 5;
     private static final int BARITONE_RECOVERY_RETRY_DELAY_TICKS = 20;
     private static final int BARITONE_STOP_SETTLE_TICKS = 2;
+    private static final int CHUNK_REFRESH_CONFIRM_TICKS = 10 * 20;
     private static final int BLOCKED_CENTER_STALL_TICKS = 5 * 20;
     private static final long ALIGNMENT_GATE_TIMEOUT_MS = 10_000L;
     private static final int POST_REJOIN_AXIS_PROBE_DISTANCE = 20;
@@ -2272,7 +2274,8 @@ public class THMHwyMonitor extends Module {
         recoveryBuilder = builder;
         recoveryCause = RecoveryCause.ChunkRefresh;
         chunkRefreshReturnTarget = retreat;
-        chunkRefreshFarTarget = chunkRefreshTarget(chunkBackstepGoal(start, direction.offsetX, direction.offsetZ, 4), direction);
+        int serverRadius = ((ClientPacketListenerAccessor) mc.getConnection()).thm$getServerChunkRadius();
+        chunkRefreshFarTarget = chunkRefreshTarget(chunkRefreshFarGoal(start, direction.offsetX, direction.offsetZ, serverRadius), direction);
         chunkRefreshProbe = ChunkPos.containing(start);
         chunkRefreshForgotten = chunkRefreshReloaded = false;
         chunkRefreshHolding = chunkRefreshExtended = chunkRefreshReturning = false;
@@ -2292,6 +2295,20 @@ public class THMHwyMonitor extends Module {
 
     static BlockPos chunkBackstepGoal(BlockPos start, int directionX, int directionZ, int chunks) {
         return start.offset(-directionX * 16 * chunks, 0, -directionZ * 16 * chunks);
+    }
+
+    static BlockPos chunkRefreshFarGoal(BlockPos start, int directionX, int directionZ, int serverRadius) {
+        // Servers can ignore the requested radius; include their reported radius and tracking margin.
+        return chunkBackstepGoal(start, directionX, directionZ, Math.max(4, serverRadius + 2));
+    }
+
+    static int chunkRefreshTravelTimeoutTicks(double distance) {
+        return Math.max(BARITONE_PATH_TIMEOUT_TICKS, (int) Math.ceil(distance / 3.0) * 20 + CHUNK_REFRESH_CONFIRM_TICKS);
+    }
+
+    static boolean canReturnFromChunkRefresh(boolean forgotten, boolean reloaded, boolean probeLoaded) {
+        // Unload and replacement can both arrive before the next tick observes an absent chunk.
+        return forgotten && (!probeLoaded || reloaded);
     }
 
     private RecoveryTarget chunkRefreshTarget(BlockPos goal, HorizontalDirection direction) {
@@ -2706,27 +2723,33 @@ public class THMHwyMonitor extends Module {
             return;
         }
 
+        if (chunkRefreshHolding && !chunkRefreshReturning
+            && canReturnFromChunkRefresh(chunkRefreshForgotten, chunkRefreshReloaded, chunkRefreshProbeLoaded())) {
+            ChunkResync.finishHeld();
+            chunkRefreshHolding = false;
+            chunkRefreshReturning = true;
+            stopBaritoneForRecovery(getPrimaryBaritoneForRecovery());
+            startChunkRefreshLeg(chunkRefreshReturnTarget);
+            info("Server unloaded the affected chunk. Restored view distance; returning to the first backstep.");
+            return;
+        }
+
         if (recoveryPhase == RecoveryPhase.WaitForChunkUnload) {
             if (!chunkRefreshHolding) {
-                if (ChunkResync.beginHeld()) {
+                int holdTicks = chunkRefreshTravelTimeoutTicks(horizontalDistanceToGoalCenter(
+                    chunkRefreshFarTarget.goalX(), chunkRefreshFarTarget.goalZ())) + 2 * CHUNK_REFRESH_CONFIRM_TICKS;
+                if (ChunkResync.beginHeld(holdTicks)) {
                     chunkRefreshHolding = true;
                     recoveryTicks = 20;
                 } else if (--recoveryTicks <= 0) failBaritoneRecovery("Another chunk refresh did not finish");
-                return;
-            }
-            if (chunkRefreshForgotten && !chunkRefreshProbeLoaded()) {
-                ChunkResync.finishHeld();
-                chunkRefreshHolding = false;
-                chunkRefreshReturning = true;
-                startChunkRefreshLeg(chunkRefreshReturnTarget);
-                info("Server unloaded the affected chunk. Restored view distance; returning to the first backstep.");
                 return;
             }
             if (--recoveryTicks > 0) return;
             if (!chunkRefreshExtended) {
                 chunkRefreshExtended = true;
                 startChunkRefreshLeg(chunkRefreshFarTarget);
-                info("Nearby chunk is still tracked. Extending retreat to four chunks to clear the minimum server radius.");
+                info("Nearby chunk is still tracked. Extending retreat beyond the server radius to (%d, %d, %d).",
+                    chunkRefreshFarTarget.goalX(), chunkRefreshFarTarget.goalY(), chunkRefreshFarTarget.goalZ());
             } else failBaritoneRecovery("Server did not unload the affected chunk");
             return;
         }
@@ -2814,7 +2837,9 @@ public class THMHwyMonitor extends Module {
             }
 
             baritoneStartupTicks = BARITONE_PATH_STARTUP_TICKS;
-            baritoneTimeoutTicks = BARITONE_PATH_TIMEOUT_TICKS;
+            baritoneTimeoutTicks = recoveryCause == RecoveryCause.ChunkRefresh
+                ? chunkRefreshTravelTimeoutTicks(horizontalDistanceToGoalCenter(pendingCorrectionTarget.goalX(), pendingCorrectionTarget.goalZ()))
+                : BARITONE_PATH_TIMEOUT_TICKS;
             recoveryPhase = RecoveryPhase.BaritoneWalking;
             info("Baritone recovery path attempt %d/%d started to (%d, %d, %d).",
                 baritoneRecoveryStartAttempts,
@@ -2863,7 +2888,7 @@ public class THMHwyMonitor extends Module {
 
             if (recoveryCause == RecoveryCause.ChunkRefresh) {
                 recoveryPhase = chunkRefreshReturning ? RecoveryPhase.WaitForChunkReload : RecoveryPhase.WaitForChunkUnload;
-                recoveryTicks = 10 * 20;
+                recoveryTicks = CHUNK_REFRESH_CONFIRM_TICKS;
                 return;
             }
 

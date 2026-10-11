@@ -35,6 +35,7 @@
     "WorldRendererGhostMixin",
     "accessor.CameraAccessor",
     "accessor.ChatHudAccessor",
+    "accessor.ClientPacketListenerAccessor",
     "accessor.ClientPlayerInteractionManagerTHMAccessor",
     "accessor.EntityPositionAccessor",
     "accessor.ExplosionS2CPacketAccessor",
@@ -84,6 +85,7 @@
     "meteor.TimerMixin"
   ],
   "client": [
+    "AnarchyJoinMixin",
     "ClientChunkCacheSurroundMixin",
     "ClientConnectionChokeMixin",
     "ClientLevelBlockUpdateMixin",

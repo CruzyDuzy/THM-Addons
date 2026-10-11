@@ -12,7 +12,7 @@ This document lists the modules, HUD widgets, and utilities shipped with THM Add
 - `THM-HighwayBuilder` — Automatically builds highways according to THM standards.
 - `THM Highway Monitor` — Monitors alignment and recovers HighwayBuilder from drift, with reconnect or chunk-refresh recovery. Requires Baritone.
 - `Highway-Tools` — Highway utilities: axis walker, highway teleporter, boundary finder, and highway checker. Requires Baritone.
-- `axis-viewer` — Displays world axes.
+- `axis-viewer` — Displays world axes and Nether highways, including XaeroPlus rings, diamonds, the 50k grid, and 125k extensions.
 - `scaffold-THM` — Scaffolds blocks under you.
 - `auto-portal` — For the Base Hunter who has places to be.
 - `Fly-Bypass` — Fly using packets.

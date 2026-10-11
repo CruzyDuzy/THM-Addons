@@ -37,6 +37,8 @@
 - Silent miners must compare against `InventoryManager.getServerSlot()`, because other modules and vanilla can change it. Tool Hold waits for server confirmation; client-side air does not confirm a break. A rebreak STOP uses the position retained by the last server START, so starting another position invalidates that primed rebreak.
 - Client block prediction must call `ClientLevel.setBlock` inside the same `startPrediction` callback as its mining packet. Setting air after that scope closes bypasses vanilla acknowledgement/correction tracking. TPS sync scales elapsed progress and packet cadence; START already contributes one server tick of mining progress.
 
+- Offhand refills prefer spare inventory stacks and retain an item in managed hotbar slots. EChest mining keeps the reserve outside the offhand before packet-only replacements, since those do not decrement the client stack.
+- Restock source positions must round standing Y like the blockade iterators. Clear a solid block directly above an EChest lid before opening a single chest.
 - Offhand supplies belong to the whole restock sequence, including recovery states. Refilling obsidian outside `MineEnderChests` can displace its chest stack. `PICKUP` moves require an empty cursor, and chest menus expose no offhand slot; use `ContainerInput.SWAP` with button `SlotUtils.OFFHAND` for different items, and merge matching stacks only in the player inventory with an empty cursor.
 - `migrateMappings` changed known Yarn names to Mojang names. It did not port changed Minecraft, Fabric, or Meteor APIs. Wildcard imports and mixin targets need manual review. Run it only in an isolated checkout: a failed run previously removed its input directory.
 - Minecraft 26.2 uses Java 25 and the non-remapping Fabric Loom plugin. There is no Yarn dependency or `mappings(...)` entry in this branch. The Gradle daemon JVM criteria requests Java 25.
@@ -64,3 +66,4 @@
 - Flat-all-dimensions test worlds can show an experimental backup prompt when reopened. Autonomous smoke runs create fresh worlds instead of assuming an old test world opens without a prompt.
 
 - Vanilla 26.2 `ChunkMap.getPlayerViewDistance` clamps client requests to at least 2. `updateChunkTracking` skips an unchanged center/radius and diffs tracked chunks when they change. A client chunk-cache deletion does not request fresh server data; wait for server unload and replacement packets.
+- Fixed server send radii can retain the stalled chunk after a four-chunk retreat. Use `ClientPacketListener.serverChunkRadius` plus the tracking margin, and allow enough walking time. Unload and replacement packets can both arrive before a tick observes the chunk missing.

@@ -4,8 +4,6 @@
  * By using this code you agree to the license terms and to keep your repo public.
  */
 
-//Thank you https://github.com/1exmc that you have alr added support for Ring and diamond Highways
-
 package xyz.thm.addon.modules;
 
 import it.unimi.dsi.fastutil.ints.IntList;
@@ -17,7 +15,6 @@ import meteordevelopment.meteorclient.utils.render.color.Color;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.meteorclient.utils.world.Dimension;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.world.phys.Vec3;
 import xyz.thm.addon.THMAddon;
 import xyz.thm.addon.settings.DescribedOption;
 import xyz.thm.addon.utils.RenderUtilsTHM;
@@ -26,6 +23,8 @@ public class AxisViewer extends Module {
     private final SettingGroup sgOverworld = settings.createGroup("Overworld");
     private final SettingGroup sgNether = settings.createGroup("Nether");
     private final SettingGroup sgEnd = settings.createGroup("End");
+    private final double[] clippedLine = new double[4];
+    private double minX, minZ, maxX, maxZ;
 
     // Overworld
 
@@ -84,14 +83,19 @@ public class AxisViewer extends Module {
         .build()
     );
 
-   // private final Setting<Integer> netherY = sgNether.add(new IntSetting.Builder()
-   //     .name("height")
-   //     .description("Y position of the line.")
-   //     .defaultValue(120)
-   //     .sliderMin(0)
-   //     .sliderMax(255)
-   //     .build()
-   // );
+    private final Setting<Boolean> netherGrid = sgNether.add(new BoolSetting.Builder()
+        .name("Render 50k Grid")
+        .description("Draw highways every 5,000 blocks within the 50,000-block grid.")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Boolean> netherExtensions = sgNether.add(new BoolSetting.Builder()
+        .name("Render 50k Extensions")
+        .description("Extend the 50,000-block roads out to 125,000 blocks.")
+        .defaultValue(false)
+        .build()
+    );
 
     private final Setting<SettingColor> netherColor = sgNether.add(new ColorSetting.Builder()
         .name("color")
@@ -102,7 +106,7 @@ public class AxisViewer extends Module {
 
     private final Setting<Boolean> highwayCenterMode = sgNether.add(new BoolSetting.Builder()
         .name("Draw True Center: ")
-        .description("This will move the axis line to the center of the middle block instead of the block edge.")
+        .description("Draw lines through block centers.")
         .defaultValue(true)
         .build()
     );
@@ -135,10 +139,12 @@ public class AxisViewer extends Module {
     );
 
     public AxisViewer() {
-        super(THMAddon.MAIN, "axis-viewer", "Displays world axes.");
+        super(THMAddon.MAIN, "axis-viewer", "Displays world axes and Nether highways.");
     }
 
-    private static final IntList RING_ROADS = IntList.of(
+    // Original rings and diamonds: https://github.com/1exmc.
+    // Additional highway data: rfresh2/XaeroPlus (MIT); see licenses/xaeroplus.txt.
+    static final IntList RING_ROADS = IntList.of(
         200,
         500,
         750,
@@ -146,9 +152,13 @@ public class AxisViewer extends Module {
         1500,
         2000,
         2500,
+        3131,
+        3500,
         5000,
+        6250,
         7500,
         10000,
+        12500,
         15000,
         20000,
         25000,
@@ -166,14 +176,16 @@ public class AxisViewer extends Module {
         1568852,
         1875000,
         2500000,
-        3750000
+        3750000,
+        30000000
     );
 
-    private static final IntList DIAMONDS = IntList.of(
+    static final IntList DIAMONDS = IntList.of(
         1000,
         2000,
         2500,
         5000,
+        10000,
         25000,
         50000,
         125000,
@@ -184,17 +196,15 @@ public class AxisViewer extends Module {
 
     @EventHandler
     private void onRender3D(Render3DEvent event) {
-        if (mc.gui.hud.isHidden()) return;
+        if (mc.level == null || mc.gui.hud.isHidden()) return;
 
+        Dimension dimension = PlayerUtils.getDimension();
         AxisType axisType;
         int y;
         Color lineColor;
-        boolean netherCardinalLocal = false;
-        boolean netherDiagonalLocal = false;
-        boolean netherRingLocal = false;
-        boolean netherDiamondLocal = false;
-
-        switch (PlayerUtils.getDimension()) {
+        boolean cardinals = false;
+        boolean diagonals = false;
+        switch (dimension) {
             case Overworld -> {
                 axisType = overworldAxisTypes.get();
                 y = overworldY.get();
@@ -202,10 +212,8 @@ public class AxisViewer extends Module {
             }
             case Nether -> {
                 axisType = AxisType.None;
-                netherCardinalLocal = netherCardinal.get();
-                netherDiagonalLocal = netherDiagonal.get();
-                netherRingLocal = netherRing.get();
-                netherDiamondLocal = netherDiamond.get();
+                cardinals = netherCardinal.get();
+                diagonals = netherDiagonal.get();
                 y = 120;
                 lineColor = netherColor.get();
             }
@@ -214,132 +222,102 @@ public class AxisViewer extends Module {
                 y = endY.get();
                 lineColor = endColor.get();
             }
-            default -> throw new IllegalStateException("Unexpected value: " + PlayerUtils.getDimension());
+            default -> throw new IllegalStateException("Unexpected dimension: " + dimension);
         }
+        if (axisType == AxisType.None && dimension != Dimension.Nether) return;
 
-        if (axisType == AxisType.None && PlayerUtils.getDimension() != Dimension.Nether) return;
+        // Clip around the render camera so Freecam follows the same visible roads.
+        double radius = mc.options.getEffectiveRenderDistance() * 16.0;
+        minX = event.offsetX - radius;
+        minZ = event.offsetZ - radius;
+        maxX = event.offsetX + radius;
+        maxZ = event.offsetZ + radius;
+        double offset = highwayCenterMode.get() ? 0.5 : 0.0;
 
-        double renderY = y;
-
-        double centerOffset = highwayCenterMode.get() ? 0.5 : 0.0;
-
-        // Render cardinal lines
-        if (axisType.cardinals() || netherCardinalLocal) {
-            // X axis
-            drawSegmentedLine(event,
-                new Vec3(-30_000_000, renderY, centerOffset),
-                new Vec3( 30_000_000, renderY, centerOffset),
-                lineColor
-            );
-
-            // Z axis
-            drawSegmentedLine(event,
-                new Vec3(centerOffset, renderY, -30_000_000),
-                new Vec3(centerOffset, renderY,  30_000_000),
-                lineColor
-            );
+        if (axisType.cardinals() || cardinals) {
+            drawLine(event, -30_000_000, offset, 30_000_000, offset, y, lineColor);
+            drawLine(event, offset, -30_000_000, offset, 30_000_000, y, lineColor);
         }
+        if (axisType.diagonals() || diagonals) {
+            drawLine(event, -30_000_000 + offset, -30_000_000 + offset,
+                30_000_000 + offset, 30_000_000 + offset, y, lineColor);
+            drawLine(event, -30_000_000, 30_000_000 + 2 * offset,
+                30_000_000, -30_000_000 + 2 * offset, y, lineColor);
+        }
+        if (dimension != Dimension.Nether) return;
 
-        if (axisType.diagonals() || netherDiagonalLocal) {
-            // Diagonal 1: x = z
-            drawSegmentedLine(event,
-                new Vec3(-30_000_000 + centerOffset, renderY, -30_000_000 + centerOffset),
-                new Vec3( 30_000_000 + centerOffset, renderY,  30_000_000 + centerOffset),
-                lineColor
-            );
-
-            // Diagonal 2:
-            if (!highwayCenterMode.get()) {
-                drawSegmentedLine(event,
-                    new Vec3(-30_000_000, renderY,  30_000_000),
-                    new Vec3( 30_000_000, renderY, -30_000_000),
-                    lineColor
-                );
-            } else {
-                drawSegmentedLine(event,
-                    new Vec3(-30_000_000, renderY,  30_000_000 + 1),
-                    new Vec3( 30_000_000, renderY, -30_000_000 + 1),
-                    lineColor
-                );
+        if (netherRing.get()) {
+            for (int i = 0; i < RING_ROADS.size(); i++) {
+                double r = RING_ROADS.getInt(i);
+                double low = -r + offset, high = r + offset;
+                drawLine(event, low, low, high, low, y, lineColor);
+                drawLine(event, low, high, high, high, y, lineColor);
+                drawLine(event, low, low, low, high, y, lineColor);
+                drawLine(event, high, low, high, high, y, lineColor);
             }
         }
-
-        // Render ring lines
-        if (PlayerUtils.getDimension() == Dimension.Nether && netherRingLocal) {
-            for (int r : RING_ROADS) {
-                drawRing(event, renderY, r, centerOffset, lineColor);
+        if (netherDiamond.get()) {
+            for (int i = 0; i < DIAMONDS.size(); i++) {
+                double d = DIAMONDS.getInt(i);
+                drawLine(event, d + offset, offset, offset, d + offset, y, lineColor);
+                drawLine(event, offset, d + offset, -d + offset, offset, y, lineColor);
+                drawLine(event, -d + offset, offset, offset, -d + offset, y, lineColor);
+                drawLine(event, offset, -d + offset, d + offset, offset, y, lineColor);
             }
         }
-
-        // Render diamond lines
-        if (PlayerUtils.getDimension() == Dimension.Nether && netherDiamondLocal) {
-            for (int d : DIAMONDS) {
-                drawDiamond(event, renderY, d, centerOffset, lineColor);
+        if (netherGrid.get()) {
+            for (int coordinate = -50_000; coordinate < 50_000; coordinate += 5_000) {
+                if (coordinate == 0) continue;
+                drawLine(event, coordinate + offset, -50_000 + offset,
+                    coordinate + offset, 50_000 + offset, y, lineColor);
+                drawLine(event, -50_000 + offset, coordinate + offset,
+                    50_000 + offset, coordinate + offset, y, lineColor);
+            }
+        }
+        if (netherExtensions.get()) {
+            for (int side = -1; side <= 1; side += 2) {
+                for (int direction = -1; direction <= 1; direction += 2) {
+                    double start = direction * 50_000 + offset;
+                    double end = direction * 125_000 + offset;
+                    double fixed = side * 50_000 + offset;
+                    drawLine(event, start, fixed, end, fixed, y, lineColor);
+                    drawLine(event, fixed, start, fixed, end, y, lineColor);
+                }
             }
         }
     }
 
-    private void drawRing(Render3DEvent event, double y, double r, double centerOffset, Color color) {
-        double left   = -r + centerOffset;
-        double right  =  r + centerOffset;
-        double bottom = -r + centerOffset;
-        double top    =  r + centerOffset;
-
-        // bottom
-        drawSegmentedLine(event, new Vec3(left, y, bottom), new Vec3(right, y, bottom), color);
-        // top
-        drawSegmentedLine(event, new Vec3(left, y, top), new Vec3(right, y, top), color);
-        // left
-        drawSegmentedLine(event, new Vec3(left, y, bottom), new Vec3(left,  y, top), color);
-        // right
-        drawSegmentedLine(event, new Vec3(right,y, bottom), new Vec3(right, y, top), color);
+    private void drawLine(Render3DEvent event, double x1, double z1, double x2, double z2,
+                          double y, Color color) {
+        if (!clipLine(x1, z1, x2, z2, minX, minZ, maxX, maxZ, clippedLine)) return;
+        RenderUtilsTHM.renderLine(event, clippedLine[0], y, clippedLine[1],
+            clippedLine[2], y, clippedLine[3], color);
     }
 
-    private void drawDiamond(Render3DEvent event, double y, int d, double centerOffset, Color color) {
-        drawSegmentedLine(event,
-            new Vec3( d + centerOffset, y,  0 + centerOffset),
-            new Vec3( 0 + centerOffset, y,  d + centerOffset),
-            color
-        );
-
-        drawSegmentedLine(event,
-            new Vec3( 0 + centerOffset, y,  d + centerOffset),
-            new Vec3(-d + centerOffset, y,  0 + centerOffset),
-            color
-        );
-
-        drawSegmentedLine(event,
-            new Vec3(-d + centerOffset, y,  0 + centerOffset),
-            new Vec3( 0 + centerOffset, y, -d + centerOffset),
-            color
-        );
-
-        drawSegmentedLine(event,
-            new Vec3( 0 + centerOffset, y, -d + centerOffset),
-            new Vec3( d + centerOffset, y,  0 + centerOffset),
-            color
-        );
-    }
-
-    private void drawSegmentedLine(Render3DEvent event, Vec3 start, Vec3 end, Color color) {
-        double segmentLength = 100_000; // Length of each segment to avoid rendering issues
-        Vec3 direction = end.subtract(start).normalize();
-        double totalLength = start.distanceTo(end);
-        int segments = (int) (totalLength / segmentLength);
-
-        Vec3 currentStart = start;
-        for (int i = 0; i < segments; i++) {
-            Vec3 currentEnd = currentStart.add(direction.scale(segmentLength));
-            drawLine(event, currentStart, currentEnd, color);
-            currentStart = currentEnd;
+    static boolean clipLine(double x1, double z1, double x2, double z2,
+                            double minX, double minZ, double maxX, double maxZ, double[] output) {
+        double dx = x2 - x1, dz = z2 - z1;
+        double from = 0, to = 1;
+        if (dx == 0) {
+            if (x1 < minX || x1 > maxX) return false;
+        } else {
+            double a = (minX - x1) / dx, b = (maxX - x1) / dx;
+            from = Math.max(from, Math.min(a, b));
+            to = Math.min(to, Math.max(a, b));
         }
-        // Draw remaining part
-        drawLine(event, currentStart, end, color);
-    }
-
-    private void drawLine(Render3DEvent event, Vec3 start, Vec3 end, Color color) {
-        RenderUtilsTHM.renderLine(event, start.x(), start.y(), start.z(),
-            end.x(), end.y(), end.z(), color);
+        if (dz == 0) {
+            if (z1 < minZ || z1 > maxZ) return false;
+        } else {
+            double a = (minZ - z1) / dz, b = (maxZ - z1) / dz;
+            from = Math.max(from, Math.min(a, b));
+            to = Math.min(to, Math.max(a, b));
+        }
+        if (from > to) return false;
+        output[0] = x1 + from * dx;
+        output[1] = z1 + from * dz;
+        output[2] = x1 + to * dx;
+        output[3] = z1 + to * dz;
+        return true;
     }
 
     public enum AxisType implements DescribedOption {

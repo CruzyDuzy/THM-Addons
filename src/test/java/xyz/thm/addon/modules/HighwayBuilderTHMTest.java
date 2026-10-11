@@ -16,6 +16,52 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class HighwayBuilderTHMTest {
     @Test
+    void offhandRefillUsesSpareInventoryBeforeManagedOrUnmanagedHotbarStacks() {
+        var stock = new HashSet<>(Arrays.asList(0, 6, 15));
+        assertEquals(15, HighwayBuilderTHM.selectOffhandSupplySlot(36, stock::contains, i -> i == 6));
+        stock.remove(15);
+        assertEquals(0, HighwayBuilderTHM.selectOffhandSupplySlot(36, stock::contains, i -> i == 6));
+        stock.remove(0);
+        assertEquals(6, HighwayBuilderTHM.selectOffhandSupplySlot(36, stock::contains, i -> i == 6));
+        stock.clear();
+        assertEquals(-1, HighwayBuilderTHM.selectOffhandSupplySlot(36, stock::contains, i -> i == 6));
+    }
+
+    @Test
+    void offhandMiningLeavesTheChestReserveOutsideTheConsumableHand() {
+        int source = 64;
+        int otherChests = 4;
+        int offhand = 0;
+        int reserve = 11;
+        int keep = HighwayBuilderTHM.offhandSupplyReserve(otherChests, reserve, true);
+        while (source > keep) {
+            source--;
+            offhand++;
+        }
+        assertEquals(7, source);
+        assertEquals(reserve, source + otherChests);
+        assertEquals(57, offhand);
+        // Even consuming every packet-only placement leaves the inventory reserve intact.
+        offhand = 0;
+        assertEquals(reserve, source + otherChests + offhand);
+    }
+
+    @Test
+    void offhandRefillKeepsOneItemInManagedSlotsWhenChestReserveIsElsewhere() {
+        assertEquals(1, HighwayBuilderTHM.offhandSupplyReserve(64, 11, true));
+        assertEquals(1, HighwayBuilderTHM.offhandSupplyReserve(0, 0, true));
+        assertEquals(0, HighwayBuilderTHM.offhandSupplyReserve(64, 11, false));
+        assertEquals(64, HighwayBuilderTHM.offhandSupplyReserve(0, 64, false));
+    }
+
+    @Test
+    void restockSourceAnchorMatchesBlockadeHeightOnSlabsAndChestTops() {
+        assertEquals(new BlockPos(-17, 120, 23), HighwayBuilderTHM.restockAnchor(-16.5, 119.875, 23.5));
+        assertEquals(new BlockPos(-17, 120, 23), HighwayBuilderTHM.restockAnchor(-16.5, 119.5, 23.5));
+        assertEquals(new BlockPos(-17, 120, 23), HighwayBuilderTHM.restockAnchor(-16.5, 120, 23.5));
+    }
+
+    @Test
     void equalPickaxesStopMovingAfterTheFirstManagedSlotSwap() {
         String[] inventory = new String[36];
         inventory[1] = "pickaxe-a";

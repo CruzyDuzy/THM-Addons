@@ -27,6 +27,7 @@ public final class ChunkResync {
     private static final ChunkResync INSTANCE = new ChunkResync();
 
     private int ticks = -1;
+    private int holdTimeoutTicks = MAX_HOLD_TICKS;
     private ClientInformation lastSent;
     private ClientInformation saved;
     private boolean sendingOwn;
@@ -44,7 +45,11 @@ public final class ChunkResync {
             INSTANCE.saved.viewDistance(), INSTANCE.saved.viewDistance());
     }
 
-    public static boolean beginHeld() { return INSTANCE.begin(true); }
+    public static boolean beginHeld(int timeoutTicks) {
+        if (!INSTANCE.begin(true)) return false;
+        INSTANCE.holdTimeoutTicks = Math.max(MAX_HOLD_TICKS, timeoutTicks);
+        return true;
+    }
     public static boolean isHeld() { return INSTANCE.held; }
     public static boolean isActive() { return INSTANCE.ticks >= 0; }
 
@@ -90,7 +95,7 @@ public final class ChunkResync {
                 send(withViewDistance(saved, 2));
                 reapplyDistance = false;
             }
-            if (ticks >= MAX_HOLD_TICKS) {
+            if (ticks >= holdTimeoutTicks) {
                 finishHeld();
                 ChatUtils.warning("Chunk refresh timed out; restored view distance.");
             }
