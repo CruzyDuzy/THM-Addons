@@ -35,6 +35,7 @@ public class APIUtils {
     private static final int MAX_USERNAMES_PER_MEMBER = 32;
     private static final int MAX_CAPES = 64;
     private static final int MAX_HIGHWAY_ROWS = 8_000;
+    private static final int MAX_HIGHWAY_WORKERS = 8;
 
     private APIUtils() {}
 
@@ -209,35 +210,46 @@ public class APIUtils {
             if (body == null) return null;
 
             JsonObject root = GSON.fromJson(body, JsonObject.class);
-            Map<String, String> highwayByName = new HashMap<>();
-            Map<String, Long> newestTimestampByName = new HashMap<>();
-            if (root != null) {
-                if (root.size() > MAX_HIGHWAY_ROWS) {
-                    THMAddon.LOG.warn("Highway status payload exceeded {} entries; ignoring remote payload", MAX_HIGHWAY_ROWS);
-                    return highwayByName;
-                }
-                for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
-                    String highway = entry.getKey();
-                    if (!entry.getValue().isJsonObject()) continue;
-                    JsonObject value = entry.getValue().getAsJsonObject();
-                    if (!value.has("username")) continue;
-
-                    String raw = value.get("username").getAsString().trim().toLowerCase(Locale.ROOT);
-                    if (raw.isEmpty() || "unknown".equals(raw)) continue;
-
-                    long timestamp = value.has("timestamp") ? value.get("timestamp").getAsLong() : Long.MIN_VALUE;
-                    Long existingTimestamp = newestTimestampByName.get(raw);
-                    if (existingTimestamp == null || timestamp >= existingTimestamp) {
-                        newestTimestampByName.put(raw, timestamp);
-                        highwayByName.put(raw, highway);
-                    }
-                }
+            if (root == null) return null;
+            if (root.size() > MAX_HIGHWAY_ROWS) {
+                THMAddon.LOG.warn("Highway status payload exceeded {} entries; ignoring remote payload", MAX_HIGHWAY_ROWS);
+                return null;
             }
-            return highwayByName;
+            return parseHighwayStatus(root);
         } catch (Exception e) {
             THMAddon.LOG.warn("Error fetching highway status from API: {}", e.getMessage());
             return null;
         }
+    }
+
+    static Map<String, String> parseHighwayStatus(JsonObject root) {
+        Map<String, String> highwayByName = new HashMap<>();
+        Map<String, Long> newestTimestampByName = new HashMap<>();
+        for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
+            if (!entry.getValue().isJsonObject()) continue;
+            JsonObject value = entry.getValue().getAsJsonObject();
+            JsonElement workers = value.get("workers");
+            // workers is authoritative; the top-level username mirrors only the newest worker.
+            List<JsonElement> rows = workers != null && workers.isJsonArray()
+                ? workers.getAsJsonArray().asList() : List.of(value);
+            for (int i = 0; i < Math.min(rows.size(), MAX_HIGHWAY_WORKERS); i++) {
+                if (!rows.get(i).isJsonObject()) continue;
+                JsonObject worker = rows.get(i).getAsJsonObject();
+                try {
+                    String name = stringField(worker, "username").trim().toLowerCase(Locale.ROOT);
+                    if (!isMinecraftUsername(name) || "unknown".equals(name)) continue;
+                    long timestamp = worker.has("timestamp") ? worker.get("timestamp").getAsLong() : Long.MIN_VALUE;
+                    Long existing = newestTimestampByName.get(name);
+                    if (existing == null || timestamp >= existing) {
+                        newestTimestampByName.put(name, timestamp);
+                        highwayByName.put(name, entry.getKey());
+                    }
+                } catch (RuntimeException ignored) {
+                    // A malformed worker must not hide the rest of the board.
+                }
+            }
+        }
+        return highwayByName;
     }
 
     public static Map<String, String> fetchCapeListFromApi() {
