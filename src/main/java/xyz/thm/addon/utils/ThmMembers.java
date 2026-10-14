@@ -102,6 +102,7 @@ public final class ThmMembers {
         synchronized (ThmMembers.class) {
             if (fetchInProgress) return;
             if (!force && startupFetchStarted) return;
+            if (!APIUtils.canRequest()) return;
 
             fetchInProgress = true;
             startupFetchStarted = true;

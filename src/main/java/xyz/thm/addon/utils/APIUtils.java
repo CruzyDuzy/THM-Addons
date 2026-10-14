@@ -85,7 +85,7 @@ public class APIUtils {
 
     private static volatile String lastSkipReason;
 
-    /** API traffic only goes out on 6b6t with a valid token. Logs the reason once each time it changes. */
+    /** API traffic requires a world and a valid token. Logs the reason when it changes. */
     public static boolean canRequest() {
         String reason = skipReason();
         if (reason == null) {
@@ -105,7 +105,6 @@ public class APIUtils {
             if (system == null) return "settings not loaded";
             if (!system.hasApiToken()) return "no valid API token set (must be a UUID)";
             if (mc.level == null) return "not in a world";
-            if (THMUtils.isNot6B6T()) return "not on 6b6t";
             return null;
         } catch (Throwable t) {
             return "check failed: " + t.getClass().getSimpleName();
