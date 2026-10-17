@@ -6,6 +6,7 @@
 
 package xyz.thm.addon.mixin.sodium;
 
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.world.level.ChunkPos;
@@ -15,18 +16,11 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * Sodium-side equivalent of {@code EdgeRenderMixin}. Sodium tracks, per chunk column, whether
- * every column in its 3x3 neighborhood has both block and light data before marking it "ready"
- * to build/render — same idea as vanilla's isChunkNonEmpty check that EdgeRenderMixin bypasses,
- * just reimplemented inside Sodium's own renderer (which never goes through vanilla's
- * ChunkBuilder, so that mixin has no effect once Sodium is installed). At the outer ring of
- * render distance the one-out neighbor never finishes loading, so that column is never marked
- * ready and its section stays permanently unrendered. Only loads when Sodium's ChunkTracker
- * class is actually present ("required": false in thm-addon.sodium.mixins.json).
- */
+/** Renders loaded edge chunks without requiring their missing neighbors. */
 @Mixin(targets = "net.caffeinemc.mods.sodium.client.render.chunk.map.ChunkTracker", remap = false)
 public abstract class SodiumEdgeRenderMixin {
+    @Shadow
+    private Long2IntOpenHashMap chunkStatus;
     @Shadow
     private LongOpenHashSet chunkReady;
     @Shadow
@@ -34,12 +28,13 @@ public abstract class SodiumEdgeRenderMixin {
     @Shadow
     private LongSet loadQueue;
 
-    @Inject(method = "updateMerged(II)V", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "updateMerged(II)V", at = @At("TAIL"))
     private void thm$forceReady(int x, int z, CallbackInfo ci) {
         long key = ChunkPos.pack(x, z);
+        // Keep Sodium's unload handling; Voxy also consumes its ready-chunk set.
+        if (this.chunkStatus.get(key) != 3) return;
         if (this.chunkReady.add(key) && !this.unloadQueue.remove(key)) {
             this.loadQueue.add(key);
         }
-        ci.cancel();
     }
 }
