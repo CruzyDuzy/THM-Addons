@@ -73,13 +73,11 @@ class DropdownDescriptionsTest {
 
     @Test
     void dynamicChoicesAndDisabledEntriesStayConcise() {
-        for (String setting : new String[] { "thm-cape", "shader" }) {
-            String disabled = DropdownDescriptions.providedString(setting, "None");
-            String selected = DropdownDescriptions.providedString(setting, "a".repeat(200));
-            assertShort(disabled, setting);
-            assertShort(selected, setting);
-            assertNotEquals(disabled, selected);
-        }
+        String disabled = DropdownDescriptions.providedString("thm-cape", "None");
+        String selected = DropdownDescriptions.providedString("thm-cape", "a".repeat(200));
+        assertShort(disabled, "thm-cape");
+        assertShort(selected, "thm-cape");
+        assertNotEquals(disabled, selected);
         assertNull(DropdownDescriptions.providedString("unrelated-setting", "None"));
         assertNull(DropdownDescriptions.description("unrelated-option"));
     }

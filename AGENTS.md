@@ -64,6 +64,7 @@ URL and public signing key come from the same `secrets.properties`; feed and JAR
 existing Bearer API token, with membership enforced by the server.
 
 `TrustedHttp` skips API traffic before DNS or connection setup unless the current token is a full UUID.
+`APIUtils` allows member and other API requests from any server while in a world with a valid token; do not restore the 6b6t address gate. Deferred member fetching must remain eligible until a request can actually start.
 Queued requests use the current configured token; the server still validates ownership and membership.
 
 Every outbound request — API calls and player-configured webhooks alike — goes through
