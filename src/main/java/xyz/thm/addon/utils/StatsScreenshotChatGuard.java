@@ -107,13 +107,15 @@ public final class StatsScreenshotChatGuard {
             int creationTick = mc.gui.hud.getGuiTicks();
             while (!bufferedMessages.isEmpty()) {
                 BufferedMessage buffered = bufferedMessages.removeFirst();
-                ((ChatHudAccessor) chatHud).thm$addMessage(new GuiMessage(
+                GuiMessage line = new GuiMessage(
                     creationTick,
                     buffered.message(),
                     null,
                     net.minecraft.client.multiplayer.chat.GuiMessageSource.SYSTEM_SERVER,
                     buffered.indicator()
-                ));
+                );
+                ((ChatHudAccessor) chatHud).thm$addVisibleMessage(line);
+                ((ChatHudAccessor) chatHud).thm$addMessage(line);
             }
         } else {
             bufferedMessages.clear();

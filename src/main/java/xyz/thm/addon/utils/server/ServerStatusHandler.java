@@ -296,10 +296,11 @@ public final class ServerStatusHandler {
         }
     }
 
-    private static boolean isSystemIndicator(GuiMessageTag indicator) {
+    static boolean isSystemIndicator(GuiMessageTag indicator) {
         if (indicator == null) return false;
         try {
-            return indicator == GuiMessageTag.system();
+            // 26.2 uses systemSinglePlayer for server system messages too.
+            return indicator == GuiMessageTag.system() || indicator == GuiMessageTag.systemSinglePlayer();
         } catch (Throwable ignored) {
             return false;
         }

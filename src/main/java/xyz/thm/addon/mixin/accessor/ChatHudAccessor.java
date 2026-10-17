@@ -13,6 +13,9 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 
 @Mixin(ChatComponent.class)
 public interface ChatHudAccessor {
+    @Invoker("addMessageToDisplayQueue")
+    void thm$addVisibleMessage(GuiMessage line);
+
     @Invoker("addMessageToQueue")
     void thm$addMessage(GuiMessage line);
 }
