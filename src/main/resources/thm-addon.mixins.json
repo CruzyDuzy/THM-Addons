@@ -82,7 +82,9 @@
     "meteor.ThmMeteorTriangleMixin",
     "meteor.ThmMeteorWidgetMixin",
     "meteor.ThmMeteorWindowMixin",
-    "meteor.TimerMixin"
+    "meteor.TimerMixin",
+    "meteor.WidgetContainerMixin",
+    "meteor.WidgetScreenRootMixin"
   ],
   "client": [
     "AnarchyJoinMixin",
