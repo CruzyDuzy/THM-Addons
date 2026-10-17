@@ -22,6 +22,23 @@ import static org.junit.jupiter.api.Assertions.*;
 class SpeedmineTest {
     @ParameterizedTest
     @CsvSource({
+        "false,false,false,false,false,0.5,1,true",
+        "false,false,false,false,false,1,1,true",
+        "false,false,false,false,false,1.01,1,false",
+        "false,false,false,false,false,0,0,true",
+        "true,false,false,false,false,0,1,false",
+        "false,true,false,false,false,0,1,false",
+        "false,true,true,false,false,0.5,1,true",
+        "false,false,false,true,false,0,1,false",
+        "false,false,false,false,true,0,1,false"
+    })
+    void airMiningOnlyClaimsWithinConfiguredMovementAndGameModes(boolean grounded, boolean gliding,
+            boolean allowGliding, boolean creative, boolean spectator, double speed, double maximum, boolean expected) {
+        assertEquals(expected, Speedmine.canClaimAir(grounded, gliding, allowGliding, creative, spectator, speed, maximum));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
         "false,false,false,0,false",
         "false,true,false,0,true",
         "false,false,true,10,true",

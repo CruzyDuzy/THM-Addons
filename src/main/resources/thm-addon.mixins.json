@@ -96,6 +96,7 @@
     "LevelLoadingScreenMixin",
     "PlayerListHudMixin",
     "PlayerListMapMixin",
-    "accessor.ClientLevelPredictionAccessor"
+    "accessor.ClientLevelPredictionAccessor",
+    "PlayerAirMiningMixin"
   ]
 }

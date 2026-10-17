@@ -8,6 +8,9 @@ package xyz.thm.addon.modules;
 
 import meteordevelopment.meteorclient.events.entity.player.StartBreakingBlockEvent;
 import meteordevelopment.meteorclient.events.game.GameLeftEvent;
+import meteordevelopment.meteorclient.events.packets.PacketEvent;
+import meteordevelopment.meteorclient.mixin.ServerboundMovePlayerPacketAccessor;
+import meteordevelopment.meteorclient.mixininterface.IServerboundMovePlayerPacket;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
@@ -28,6 +31,8 @@ import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+import net.minecraft.network.Connection;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.InteractionHand;
@@ -64,6 +69,40 @@ public class Speedmine extends Module {
     private final SettingGroup sgMine   = settings.getDefaultGroup();
     private final SettingGroup sgAuto   = settings.createGroup("Auto Mine", false);
     private final SettingGroup sgRender = settings.createGroup("Render");
+    private final SettingGroup sgAir = settings.createGroup("Air Miner", false);
+
+    private final Setting<Boolean> airMine = sgAir.add(new BoolSetting.Builder()
+        .name("air-mine")
+        .description("Mine at ground speed while airborne.")
+        .defaultValue(false)
+        .onChanged(enabled -> { if (!enabled) restoreAirGround(); })
+        .build());
+
+    private final Setting<Boolean> airWhileGliding = sgAir.add(new BoolSetting.Builder()
+        .name("air-while-gliding")
+        .description("Allow airborne mining while gliding.")
+        .defaultValue(false)
+        .visible(airMine::get)
+        .build());
+
+    private final Setting<Double> airMaxSpeed = sgAir.add(new DoubleSetting.Builder()
+        .name("air-max-speed")
+        .description("Maximum horizontal speed for ground claims.")
+        .defaultValue(1).min(0).sliderRange(0, 3)
+        .visible(airMine::get)
+        .build());
+
+    private final Setting<Integer> airClaimWindow = sgAir.add(new IntSetting.Builder()
+        .name("air-claim-window")
+        .description("Ticks to retain the mining ground claim.")
+        .defaultValue(2).min(1).sliderRange(1, 10)
+        .visible(airMine::get)
+        .build());
+
+    private int airClaimLeft;
+    private long airClaimTick = -1;
+    private boolean airInjecting;
+    private Connection airClaimConnection;
 
     // ── Auto Mine (target selection, ported from BlackOut's AutoMine) ─────────
 
@@ -352,6 +391,9 @@ public class Speedmine extends Module {
 
     @Override
     public void onActivate() {
+        airClaimLeft = 0;
+        airClaimTick = -1;
+        airClaimConnection = null;
         lastStartCreditMs = System.currentTimeMillis();
         startCredit = 1;
         clientTick = 0;
@@ -361,6 +403,7 @@ public class Speedmine extends Module {
 
     @Override
     public void onDeactivate() {
+        restoreAirGround();
         releaseHeldSlot();
         primary            = null;
         secondary          = null;
@@ -381,6 +424,57 @@ public class Speedmine extends Module {
     private void onGameLeft(GameLeftEvent event) {
         heldSlot = -1;
         onDeactivate();
+    }
+
+    public boolean liftsAirMiningPenalty() {
+        return isActive() && airMine.get() && mc.player != null && mc.getConnection() != null
+            && canClaimAir(mc.player.onGround(), mc.player.isFallFlying(), airWhileGliding.get(),
+                mc.player.isCreative(), mc.player.isSpectator(), mc.player.getDeltaMovement().horizontalDistance(), airMaxSpeed.get());
+    }
+
+    static boolean canClaimAir(boolean onGround, boolean gliding, boolean allowGliding, boolean creative,
+                               boolean spectator, double speed, double maximum) {
+        return !onGround && (!gliding || allowGliding) && !creative && !spectator && speed <= maximum;
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    private void onAirPacket(PacketEvent.Send event) {
+        if (event.isCancelled() || airInjecting || mc.player == null || mc.getConnection() == null) return;
+        if (event.packet instanceof ServerboundPlayerActionPacket action
+            && (action.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
+                || action.getAction() == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK)
+            && liftsAirMiningPenalty()) {
+            if (airClaimTick != clientTick) {
+                sendAirGround(true);
+                airClaimTick = clientTick;
+                airClaimConnection = mc.getConnection().getConnection();
+            }
+            airClaimLeft = airClaimWindow.get();
+        } else if (event.packet instanceof ServerboundMovePlayerPacket move && airClaimLeft > 0
+            && event.connection == airClaimConnection && liftsAirMiningPenalty()) {
+            ((ServerboundMovePlayerPacketAccessor) move).meteor$setOnGround(true);
+        }
+    }
+
+    private void sendAirGround(boolean onGround) {
+        airInjecting = true;
+        try {
+            ServerboundMovePlayerPacket packet = new ServerboundMovePlayerPacket.PosRot(mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                mc.player.getYRot(), mc.player.getXRot(), onGround, mc.player.horizontalCollision);
+            if (onGround) ((IServerboundMovePlayerPacket) packet).meteor$setTag(1337);
+            mc.getConnection().send(packet);
+        } finally {
+            airInjecting = false;
+        }
+    }
+
+    private void restoreAirGround() {
+        Connection claimed = airClaimConnection;
+        airClaimConnection = null;
+        airClaimLeft = 0;
+        airClaimTick = -1;
+        if (claimed != null && mc.player != null && mc.getConnection() != null
+            && mc.getConnection().getConnection() == claimed) sendAirGround(mc.player.onGround());
     }
 
     /** Called on the client thread before a server update changes the world. */
@@ -428,6 +522,7 @@ public class Speedmine extends Module {
         if (mc.level == null || mc.player == null) return;
 
         clientTick++;
+        if (airClaimLeft > 0 && (--airClaimLeft == 0 || !liftsAirMiningPenalty())) restoreAirGround();
         long now = System.currentTimeMillis();
         startCredit = replenishStartCredit(startCredit, now - lastStartCreditMs, effectiveTps());
         lastStartCreditMs = now;
@@ -1218,7 +1313,7 @@ public class Speedmine extends Module {
                 speed *= (float) mc.player.getAttributeValue(Attributes.SUBMERGED_MINING_SPEED);
             }
 
-            if (!mc.player.onGround()) speed /= 5.0f;
+            if (!mc.player.onGround() && !liftsAirMiningPenalty()) speed /= 5.0f;
 
             return speed / hardness / divisor;
         }

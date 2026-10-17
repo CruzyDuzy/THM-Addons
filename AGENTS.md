@@ -168,6 +168,8 @@ replacement on the client thread before world application. Prediction retains th
 Speedmine also checks client replacements before and after placement ticks. Strong can retry its completed
 target without an air confirmation; other pending normal breaks still keep validation priority.
 
+**Speedmine Air Miner:** Public 26.2 only. The optional Air Miner group defaults off and claims ground around START/STOP mining packets, once per client tick. `PlayerAirMiningMixin` removes the local airborne mining penalty; Speedmine's custom progress uses the same eligibility. Claims expire and restore only on their original connection. Keep gliding opt-in and retain the speed cap. Source and manual checks: `docs/quiettee-air-miner.md`.
+
 **Surround:** `modules/Surround` replaces SurroundPlus, retaining the `surround-plus` registry name
 and showing as Surround. Both triggers repair client-world air; `onPacket` also preplaces on break effects
 and server updates, skipping batch delay and queued rotation while keeping the tick limit. Predictions expire;
