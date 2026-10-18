@@ -21,8 +21,9 @@ This document lists the modules, HUD widgets, and utilities shipped with THM Add
 - `elytra-route` — Flies to a target bearing, restocks from inventory shulkers, and manages periodic home saves.
 
 ## Mining and Building
+- `better-baritone-build` — Index opened storage, fetch missing build materials with Baritone, and manage block replacement/acceptance rules, dirt/grass equivalence, and log stripping in a custom screen.
 - `tunnel-miner` — Mines a tunnel block-by-block to target XZ coordinates at the same Y.
-- `Speedmine`: Packet mining with early packet rebreaks and client-world fallback, Off/Strict/Strong/Bypass modes, a rebreak-rate monitor, tool swap timing, TPS sync, client prediction, and optional multitasking while using items. Strong retries completed targets without an air confirmation. Active and automatic mining continue with the inventory open. Optional Air Miner removes the airborne speed penalty and claims ground around mining actions, with a speed cap and opt-in gliding.
+- `Speedmine`: Packet mining with early packet rebreaks and client-world fallback, Off/Strict/Strong/Bypass modes, a rebreak-rate monitor, tool swap timing, TPS sync, client prediction, and optional multitasking while using items. Auto Mine can independently continue bedrock mining while eating with `bedrock-while-eating` (off by default). Optional `debug-auto-mine` reports targets and idle reasons in chat. Strong retries completed targets without an air confirmation. Active and automatic mining continue with the inventory open. Optional Air Miner removes the airborne speed penalty and claims ground around mining actions, with a speed cap and opt-in gliding.
 - `BlockCounter` — Counts the selected blocks.
 - `Better-echest-farmer` — Better echest farmer that uses instant rebreak exploit.
 - `sign-render` — Renders sign text through walls with advanced clustering.

@@ -9,6 +9,7 @@ package xyz.thm.addon.modules;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.network.protocol.game.GamePacketTypes;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -16,10 +17,26 @@ import org.junit.jupiter.params.provider.EnumSource;
 import xyz.thm.addon.utils.InventoryManager;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class SpeedmineTest {
+    @Test
+    void bedrockSwingCheckUsesPacketTypesFromTheLimiter() {
+        var blocked = Set.of(GamePacketTypes.SERVERBOUND_SWING);
+        assertTrue(Speedmine.miningPacketBlocked(60, blocked, GamePacketTypes.SERVERBOUND_SWING));
+        assertFalse(Speedmine.miningPacketBlocked(60, blocked, GamePacketTypes.SERVERBOUND_PLAYER_ACTION));
+        assertFalse(Speedmine.miningPacketBlocked(0, blocked, GamePacketTypes.SERVERBOUND_SWING));
+    }
+
+    @Test
+    void autoMineCanIdentifyExplicitlyBlockedMiningActions() {
+        assertTrue(Speedmine.miningPacketBlocked(60, Set.of(GamePacketTypes.SERVERBOUND_PLAYER_ACTION),
+            GamePacketTypes.SERVERBOUND_PLAYER_ACTION));
+        assertFalse(Speedmine.miningPacketBlocked(60, Set.of(), GamePacketTypes.SERVERBOUND_PLAYER_ACTION));
+    }
+
     @ParameterizedTest
     @CsvSource({
         "false,false,false,false,false,0.5,1,true",
@@ -60,6 +77,34 @@ class SpeedmineTest {
             assertTrue(Speedmine.shouldPauseMining(true, false, false, priority));
             assertTrue(Speedmine.shouldPauseMining(true, true, true, priority));
         }
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "false,true,0,false",
+        "false,true,10,false",
+        "true,false,0,false",
+        "true,false,10,false",
+        "true,true,0,true",
+        "true,true,10,true"
+    })
+    void bedrockEatingRequiresItsToggleAndManualOrAutoEating(boolean enabled, boolean eating,
+                                                           int priority, boolean expected) {
+        assertEquals(expected, Speedmine.canMineBedrockWhileEating(enabled, eating, priority));
+    }
+
+    @Test
+    void bedrockEatingStillYieldsToOtherInventoryOwners() {
+        for (int priority : new int[] {InventoryManager.Priority.TOTEM, InventoryManager.Priority.SURROUND,
+            InventoryManager.Priority.PEARL_PHASE}) {
+            assertFalse(Speedmine.canMineBedrockWhileEating(true, true, priority));
+        }
+    }
+
+    @Test
+    void bedrockEatingDoesNotUnpauseThePacketMiner() {
+        assertTrue(Speedmine.canMineBedrockWhileEating(true, true, InventoryManager.Priority.EATING));
+        assertTrue(Speedmine.shouldPauseMining(false, true, true, InventoryManager.Priority.EATING));
     }
 
     @ParameterizedTest

@@ -196,6 +196,7 @@ public class THMAddon extends MeteorAddon implements ClientModInitializer {
         // Baritone is a hard requirement (checked above), so these need no availability guard.
         Modules.get().add(new THMHwyMonitor());
         Modules.get().add(new HighwayTools());
+        Modules.get().add(new BetterBaritoneBuild());
 
         LOG.info("[THM/Init] Modules registered; registering commands and HUD");
 

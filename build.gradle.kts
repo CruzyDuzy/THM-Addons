@@ -200,6 +200,18 @@ tasks.test {
     systemProperty("thm.requireShaderCompiler", providers.environmentVariable("CI").orElse("false").get().equals("true", ignoreCase = true))
 }
 
+tasks.register<JavaExec>("checkBuildRules") {
+    group = "verification"
+    description = "Check build rules against vanilla block states without starting a client."
+    dependsOn(tasks.classes)
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = file("tools/tests/BuildSchematicCheck.java").absolutePath
+    workingDir = layout.buildDirectory.dir("build-rules-check").get().asFile
+    doFirst { workingDir.mkdirs() }
+    systemProperty("java.awt.headless", "true")
+}
+
 tasks.register<Test>("checkShaders") {
     group = "verification"
     description = "Compile and link all THM shader programs for OpenGL and Vulkan."

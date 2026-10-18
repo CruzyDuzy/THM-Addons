@@ -110,10 +110,10 @@ class MixinTargetsTest {
                                             selected.addAll(matching);
                                             if (matching.stream().anyMatch(m -> (m.access & (org.objectweb.asm.Opcodes.ACC_ABSTRACT | org.objectweb.asm.Opcodes.ACC_NATIVE)) != 0))
                                                 failures.add(name + ": injection targets method without bytecode " + selector);
-                                            if (matching.isEmpty())
-                                                failures.add(name + ": injection " + selector);
                                             if (a.desc.endsWith("/Inject;")) checkCallback(name, method, matching, failures);
                                         }
+                                        // Selectors can include both development and minified Baritone names.
+                                        if (selected.isEmpty()) failures.add(name + ": no matching injection selector " + selectors);
                                         checkReferences(name, a, failures);
                                         checkInstructions(name, a, selected, failures);
                                     }

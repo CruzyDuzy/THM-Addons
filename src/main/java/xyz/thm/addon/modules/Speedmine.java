@@ -28,12 +28,14 @@ import meteordevelopment.orbit.EventPriority;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.Connection;
-import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+import net.minecraft.network.protocol.PacketType;
+import net.minecraft.network.protocol.game.GamePacketTypes;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffectUtil;
@@ -119,6 +121,14 @@ public class Speedmine extends Module {
         .visible(autoMine::get)
         .build());
 
+    private final Setting<Boolean> debugAutoMine = sgAuto.add(new BoolSetting.Builder()
+        .name("debug-auto-mine")
+        .description("Report Auto Mine targets and idle reasons in chat.")
+        .defaultValue(false)
+        .onChanged(enabled -> { this.lastAutoMineStatus = null; this.nextAutoMineReportTick = 0; })
+        .visible(autoMine::get)
+        .build());
+
     public final Setting<Boolean> autoMineOnly = sgAuto.add(new BoolSetting.Builder()
         .name("auto-mine-only")
         .description("Ignore blocks you click yourself — only auto-mine targets get broken.")
@@ -178,6 +188,13 @@ public class Speedmine extends Module {
     public final Setting<Boolean> bedrockOnly = sgAuto.add(new BoolSetting.Builder()
         .name("bedrock-only")
         .description("Only break bedrock, ignore every other block.")
+        .defaultValue(false)
+        .visible(() -> autoMine.get() && mineBedrock.get())
+        .build());
+
+    public final Setting<Boolean> bedrockWhileEating = sgAuto.add(new BoolSetting.Builder()
+        .name("bedrock-while-eating")
+        .description("Continue mining bedrock while eating.")
         .defaultValue(false)
         .visible(() -> autoMine.get() && mineBedrock.get())
         .build());
@@ -332,6 +349,10 @@ public class Speedmine extends Module {
 
     private BlockPos bedrockPos;
     private boolean  warnedSwingBlocked;
+    private String autoMineStatus;
+    private String lastAutoMineStatus;
+    private long nextAutoMineReportTick;
+    private int autoAirRejected, autoSelfRejected, autoRangeRejected, autoDisabledRejected, autoUnbreakableRejected;
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -398,6 +419,8 @@ public class Speedmine extends Module {
         startCredit = 1;
         clientTick = 0;
         lastMiningActionTick = 0;
+        autoMineStatus = lastAutoMineStatus = null;
+        nextAutoMineReportTick = 0;
         resetRebreakMonitor();
     }
 
@@ -531,10 +554,21 @@ public class Speedmine extends Module {
         updateRebreakMonitor();
 
         InventoryManager inventory = InventoryManager.getInstance();
+        if (debugAutoMine.get()) {
+            autoMineStatus = !autoMine.get() ? "Disabled."
+                : !autoMineHeld() ? "Waiting for auto-mine-bind."
+                : inventory.getCurrentPriority() > InventoryManager.Priority.NORMAL && inventory.getCurrentPriority() != InventoryManager.Priority.EATING
+                    ? "Paused by another inventory action."
+                    : "Paused while using an item or eating.";
+        }
         if (shouldPauseMining()) {
             releaseHeldSlot();
             if (primary != null) primary.lastProgressMs = now;
             if (secondary != null) secondary.lastProgressMs = now;
+            boolean eating = inventory.isEating()
+                || (mc.player.isUsingItem() && mc.player.getUseItem().has(DataComponents.FOOD));
+            if (canMineBedrockWhileEating(bedrockWhileEating.get(), eating, inventory.getCurrentPriority())) tickAutoMine();
+            else bedrockPos = null;
             return;
         }
         int validationSlot = validationToolSlot();
@@ -567,6 +601,16 @@ public class Speedmine extends Module {
     @EventHandler(priority = EventPriority.LOWEST)
     private void onTickPost(TickEvent.Post event) {
         if (mc.player == null || mc.level == null) return;
+        if (debugAutoMine.get()) {
+            if (autoMine.get() && autoMineHeld() && miningPacketBlocked(GamePacketTypes.SERVERBOUND_PLAYER_ACTION)) {
+                autoMineStatus = "Paket Limiter blocks mining actions.";
+            }
+            if (autoMineStatus != null && !autoMineStatus.equals(lastAutoMineStatus) && clientTick >= nextAutoMineReportTick) {
+                info("Auto Mine: %s", autoMineStatus);
+                lastAutoMineStatus = autoMineStatus;
+                nextAutoMineReportTick = clientTick + 40;
+            }
+        }
         // Placers can refill predicted air after our Pre handler.
         rebreakReplacement();
         if (heldSlot == -1) return;
@@ -804,6 +848,7 @@ public class Speedmine extends Module {
     private void tickAutoMine() {
         if (!autoMine.get() || !autoMineHeld()) {
             bedrockPos = null;
+            if (debugAutoMine.get()) autoMineStatus = !autoMine.get() ? "Disabled." : "Waiting for auto-mine-bind.";
             return;
         }
 
@@ -815,7 +860,7 @@ public class Speedmine extends Module {
 
         List<BlockPos> targets = findAutoTargets();
         // Auto-mine outranks the queue: drop the backlog instead of mining it first
-        if (!targets.isEmpty()) queue.clear();
+        if (!targets.isEmpty() && !shouldPauseMining()) queue.clear();
 
         for (BlockPos target : targets) {
             if (mc.level.getBlockState(target).getBlock() == Blocks.BEDROCK) {
@@ -828,6 +873,14 @@ public class Speedmine extends Module {
             if (primary != null && (secondary != null || !doubleBreak.get())) continue;
             requestBreak(target);
         }
+        if (debugAutoMine.get() && !targets.isEmpty()) {
+            if (bedrockPos != null) autoMineStatus = "Targeting bedrock at " + bedrockPos.toShortString();
+            else if (primary != null) autoMineStatus = "Targeting block at " + primary.pos.toShortString();
+            else if (secondary != null) autoMineStatus = "Targeting block at " + secondary.pos.toShortString();
+            else if (hasPendingNormalBreak()) autoMineStatus = "Waiting for server break confirmation.";
+            else if (!canStart()) autoMineStatus = "Waiting for TPS mining credit.";
+            else autoMineStatus = "Targets selected; waiting for mining slots.";
+        }
     }
 
     /** A bound key is hold-to-mine; an unbound one means "always on". */
@@ -838,19 +891,32 @@ public class Speedmine extends Module {
     /** Every valid target around nearby enemies, nearest first. */
     private List<BlockPos> findAutoTargets() {
         List<Player> enemies = new ArrayList<>();
+        int friends = 0, members = 0, distant = 0;
         for (Player player : mc.level.players()) {
             if (player == mc.player || player.isSpectator()) continue;
-            if (Friends.get().isFriend(player)) continue;
-            if (THMSystem.get().ignoreThmMembers.get() && ThmMembers.isThmMember(player)) continue;
-            if (player.distanceTo(mc.player) > enemyRange.get()) continue;
+            if (Friends.get().isFriend(player)) { friends++; continue; }
+            if (THMSystem.get().ignoreThmMembers.get() && ThmMembers.isThmMember(player)) { members++; continue; }
+            if (player.distanceTo(mc.player) > enemyRange.get()) { distant++; continue; }
             enemies.add(player);
         }
-        if (enemies.isEmpty()) return List.of();
+        if (enemies.isEmpty()) {
+            if (debugAutoMine.get()) autoMineStatus = String.format(Locale.ROOT,
+                "No eligible players (friends=%d, THM=%d, distant=%d).", friends, members, distant);
+            return List.of();
+        }
 
         // Digging an enemy out beats chipping at their surround
+        autoAirRejected = autoSelfRejected = autoRangeRejected = autoDisabledRejected = autoUnbreakableRejected = 0;
         List<BlockPos> targets = new ArrayList<>();
         if (antiPhase.get())    targets.addAll(collect(enemies, this::phaseBlocks));
         if (targets.isEmpty() && antiSurround.get()) targets.addAll(collect(enemies, this::surroundBlocks));
+        if (debugAutoMine.get() && targets.isEmpty()) {
+            autoMineStatus = mineBedrock.get() && miningPacketBlocked(GamePacketTypes.SERVERBOUND_SWING)
+                ? "Paket Limiter blocks bedrock hand swings."
+                : !antiPhase.get() && !antiSurround.get() ? "Both anti-phase and anti-surround are disabled."
+                : String.format(Locale.ROOT, "No target blocks (air=%d, own=%d, range=%d, disabled=%d, unbreakable=%d).",
+                    autoAirRejected, autoSelfRejected, autoRangeRejected, autoDisabledRejected, autoUnbreakableRejected);
+        }
         return targets;
     }
 
@@ -858,7 +924,9 @@ public class Speedmine extends Module {
         List<BlockPos> out = new ArrayList<>();
         for (Player enemy : enemies) {
             for (BlockPos pos : candidates.apply(enemy)) {
-                if (pos != null && !outOfRange(pos) && !out.contains(pos)) out.add(pos);
+                if (pos == null) continue;
+                if (outOfRange(pos)) { autoRangeRejected++; continue; }
+                if (!out.contains(pos)) out.add(pos);
             }
         }
         Comparator<BlockPos> byDistance =
@@ -910,11 +978,16 @@ public class Speedmine extends Module {
 
     private boolean mineable(BlockPos pos) {
         BlockState state = mc.level.getBlockState(pos);
-        if (state.isAir()) return false;
-        if (neverMineOwn.get() && touchesSelf(pos)) return false;
+        if (state.isAir()) { autoAirRejected++; return false; }
+        if (neverMineOwn.get() && touchesSelf(pos)) { autoSelfRejected++; return false; }
         // Bedrock's hardness is -1, so BlockUtils.canBreak always rejects it — it has to be checked first
-        if (state.is(Blocks.BEDROCK)) return mineBedrock.get() && canSwing();
-        return !bedrockOnly.get() && BlockUtils.canBreak(pos, state);
+        if (state.is(Blocks.BEDROCK)) {
+            if (!mineBedrock.get()) { autoDisabledRejected++; return false; }
+            return canSwing();
+        }
+        if (shouldPauseMining() || bedrockOnly.get()) { autoDisabledRejected++; return false; }
+        if (!BlockUtils.canBreak(pos, state)) { autoUnbreakableRejected++; return false; }
+        return true;
     }
 
     // ── Bedrock (vanilla progress + swing, like Nuker — packets can't break it) ───
@@ -924,9 +997,7 @@ public class Speedmine extends Module {
      * preset puts in its always-block list — so bedrock silently wouldn't break with it enabled.
      */
     private boolean canSwing() {
-        PaketLimiter limiter = Modules.get().get(PaketLimiter.class);
-        boolean blocked = limiter != null && limiter.isActive() && limiter.limit.get() != 0
-            && limiter.alwaysBlock.get().contains(ServerboundSwingPacket.class);
+        boolean blocked = miningPacketBlocked(GamePacketTypes.SERVERBOUND_SWING);
         if (!blocked) {
             warnedSwingBlocked = false;
             return true;
@@ -934,9 +1005,18 @@ public class Speedmine extends Module {
 
         if (!warnedSwingBlocked) {
             warnedSwingBlocked = true;
-            warning("Bedrock needs hand swings, but Paket Limiter is blocking them — remove HandSwingC2SPacket from its always-block list.");
+            warning("Bedrock needs hand swings. Remove SERVERBOUND_SWING from Paket Limiter's always-block list.");
         }
         return false;
+    }
+
+    private boolean miningPacketBlocked(PacketType<?> type) {
+        PaketLimiter limiter = Modules.get().get(PaketLimiter.class);
+        return limiter != null && limiter.isActive() && miningPacketBlocked(limiter.limit.get(), limiter.alwaysBlock.get(), type);
+    }
+
+    static boolean miningPacketBlocked(int limit, Set<? extends PacketType<?>> blocked, PacketType<?> type) {
+        return limit != 0 && blocked.contains(type);
     }
 
     /**
@@ -1060,6 +1140,10 @@ public class Speedmine extends Module {
     static boolean shouldPauseMining(boolean multitask, boolean usingItem, boolean eating, int priority) {
         return (!multitask && (usingItem || eating))
             || (priority > InventoryManager.Priority.NORMAL && (!multitask || priority != InventoryManager.Priority.EATING));
+    }
+
+    static boolean canMineBedrockWhileEating(boolean enabled, boolean eating, int priority) {
+        return enabled && eating && !shouldPauseMining(true, true, true, priority);
     }
 
     private void resetRebreakMonitor() {

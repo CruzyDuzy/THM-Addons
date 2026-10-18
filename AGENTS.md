@@ -30,6 +30,7 @@ why, or which other settings it interacts with. If it needs more than one senten
 ## Build & run
 
 - `./gradlew build` — full build, jar lands in `build/libs`.
+- `./gradlew checkBuildRules` — standalone block-state checks for Baritone build rules; initializes vanilla registries without starting a client.
 - `./gradlew checkShaders` — OpenGL/Vulkan compiler and linker tests for backgrounds, blur, and
   trip shaders. Requires `glslangValidator` on PATH (`glslang` on Arch, `glslang-tools` on Ubuntu).
   Local `test`/`build` skips shader checks if the compiler is unavailable; CI requires it.
@@ -138,6 +139,11 @@ Highway", `THMAddon.PVP` = "THM PVP") via `onRegisterCategories()`. `THMTab` is 
 addon-specific settings screen — don't confuse the two when adding a new module's config surface.
 
 **Highway restock inventory:** Offhand refills preserve managed hotbar slots. Keep the EChest reserve outside the hand used for packet-only replacement. Container targets round standing Y like the blockade iterators; single EChests need a clear lid.
+
+**Better Baritone Build:** `BetterBaritoneBuild` indexes opened chests, barrels, and placed shulkers per world/dimension.
+`BaritoneBuilderMixin` captures missing materials directly; a temporary process fetches them without cancelling the build.
+`BuildSchematic` applies local replacement/acceptance rules and optional log stripping without changing global Baritone settings.
+Enable before starting a build to attach its schematic wrapper; keep an axe in the hotbar for stripping.
 
 **Axis Viewer:** Nether highways include XaeroPlus rings, diamonds, the 50k grid, and 125k extensions.
 Clip lines to the render camera's horizontal render distance before calling `RenderUtilsTHM`; reuse clipping scratch storage.
