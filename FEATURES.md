@@ -18,8 +18,8 @@ This document lists the modules, HUD widgets, and utilities shipped with THM Add
 - `Fly-Bypass` — Fly using packets.
 - `no-fall`: Meteor NoFall with NoGround mode, mace support, and optional reset packets on disable.
 - `highway-traveler` — Travels along anarchy highways (walk, wasp, bounce or Elytra Fly with Elytra Route's obstacle pathing); can stop at the end of the paved or dug highway.
-- `elytra-route` — Flies to a target bearing, restocks from inventory shulkers, and manages periodic home saves.
-- `stash-finder-thm` — Flies a search spiral with Elytra Route and reports chest stashes to Discord.
+- `elytra-route` — Flies to a target bearing, restocks from inventory shulkers, and manages periodic home saves. When no way through the air exists, it lands and continues on foot with Baritone. Requires Baritone.
+- `stash-finder-thm` — Flies a search spiral with Elytra Route and reports chest stashes in chat, optionally also to Discord.
 
 ## Mining and Building
 - `better-baritone-build` — Index opened storage, fetch missing build materials with Baritone, and manage block replacement/acceptance rules, dirt/grass equivalence, and log stripping in a custom screen.

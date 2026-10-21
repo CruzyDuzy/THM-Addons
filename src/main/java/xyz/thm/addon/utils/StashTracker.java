@@ -43,6 +43,14 @@ public final class StashTracker {
         reported.add(new int[]{x, z});
     }
 
+    /** Drops chunks more than {@code radius} chunks (Chebyshev) from the centre. */
+    public void pruneChunks(int centerX, int centerZ, int radius) {
+        chunks.keySet().removeIf(key -> {
+            int cx = (int) (key >> 32), cz = (int) (long) key;
+            return Math.max(Math.abs(cx - centerX), Math.abs(cz - centerZ)) > radius;
+        });
+    }
+
     public int chunkCount() {
         return chunks.size();
     }

@@ -904,6 +904,11 @@ public class HighwayTraveler extends Module {
             releaseAll();
             mc.options.keyShift.setDown(false);
             mc.options.keyJump.setDown(false);
+            if (!LivingEntity.canGlideUsing(p.getItemBySlot(EquipmentSlot.CHEST), EquipmentSlot.CHEST)) {
+                error("Fly mode needs a usable elytra in your chest slot.");
+                toggle();
+                return;
+            }
             if (p.onGround()) {
                 p.jumpFromGround();
             } else if (p.getDeltaMovement().y < 0) {

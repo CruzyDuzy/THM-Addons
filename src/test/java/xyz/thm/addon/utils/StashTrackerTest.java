@@ -53,6 +53,16 @@ class StashTrackerTest {
     }
 
     @Test
+    void pruneDropsOnlyFarChunks() {
+        StashTracker t = new StashTracker();
+        t.update(-3, 2, chests(-3, 2, 1), 0, 30, 256);
+        t.update(-20, 0, chests(-20, 0, 1), 0, 30, 256);
+        t.update(0, -9, chests(0, -9, 1), 0, 30, 256);
+        t.pruneChunks(0, 0, 5);
+        assertEquals(1, t.chunkCount());
+    }
+
+    @Test
     void spiralWalksOutwardCorners() {
         assertArrayEquals(new int[]{0, 0}, StashTracker.spiralWaypoint(0, 0, 100, 0));
         assertArrayEquals(new int[]{100, 0}, StashTracker.spiralWaypoint(0, 0, 100, 1));

@@ -20,6 +20,12 @@ class ElytraNavigatorTest {
     private static final class World implements ElytraPathPlanner.Terrain {
         Solid solid;
         double px, pz;
+        float mineCost = -1f;
+
+        @Override
+        public float mineCost(int x, int y, int z) {
+            return mineCost;
+        }
 
         @Override
         public boolean blocked(int x, int y, int z) {
@@ -105,13 +111,62 @@ class ElytraNavigatorTest {
         };
 
         ElytraPathPlanner.Search search = new ElytraPathPlanner.Search(
-            terrain, new ElytraPathPlanner.Pos(0, 100, 0), 0, 120, 4, 100, 96, 0, 255, 30_000, List.of());
+            terrain, new ElytraPathPlanner.Pos(0, 100, 0), 0, 80, 4, 100, 96, 0, 255, 200_000, List.of());
         while (!search.step(600)) { /* keep searching */ }
+        assertTrue(search.reachedGoal(), "planner must reach the goal");
 
         for (ElytraPathPlanner.Pos p : search.result()) {
             if (p.z() >= 50 && p.z() <= 53 && Math.abs(p.x()) <= 30) return true;
         }
         return false;
+    }
+
+    /** Steers toward z=300 with cheap mineable terrain; returns whether the navigator ever switched to digging. */
+    private static boolean wantsToDig(Solid solid) {
+        return wantsToDig(solid, 8_000);
+    }
+
+    private static boolean wantsToDig(Solid solid, int maxNodes) {
+        World w = new World();
+        w.solid = solid;
+        w.mineCost = 0.1f;
+        ElytraNavigator.Config c = new ElytraNavigator.Config();
+        c.preferredY = 100;
+        c.minY = 0;
+        c.maxY = 255;
+        c.maxNodes = maxNodes;
+        ElytraNavigator nav = new ElytraNavigator(w, c);
+
+        double x = 0, y = 100, z = 0;
+        for (int tick = 0; tick < 600; tick++) {
+            w.px = x;
+            w.pz = z;
+            ElytraNavigator.Steer s = nav.update(x, y, z, 0, 1, 0, 300, 6);
+            if (nav.digging()) return true;
+            if (Math.hypot(x, 300 - z) <= 6) return false;
+            double dx = s.x() - x, dz = s.z() - z, h = Math.hypot(dx, dz);
+            double mx = h < 1e-6 ? 0 : dx / h, mz = h < 1e-6 ? 0 : dz / h, my = s.vertical() * 0.8;
+            if (!box(w, x + mx, y + my, z + mz)) {
+                x += mx; y += my; z += mz;
+            }
+        }
+        return false;
+    }
+
+    @Test
+    void mineableWallWithAWayAroundIsFlownAround() {
+        assertTrue(!wantsToDig((x, y, z) -> z >= 30 && z <= 33 && Math.abs(x) <= 12 && y >= 90 && y <= 110));
+    }
+
+    @Test
+    void longDetourAroundAWideWallIsFlownInsteadOfDug() {
+        // 81 blocks wide and the full world height: the only way is a long sideways detour.
+        assertTrue(!wantsToDig((x, y, z) -> z >= 30 && z <= 33 && Math.abs(x) <= 40, new ElytraNavigator.Config().maxNodes));
+    }
+
+    @Test
+    void digsOnlyWhenNoWayAroundExists() {
+        assertTrue(wantsToDig((x, y, z) -> z >= 30 && z <= 33));
     }
 
     @Test

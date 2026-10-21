@@ -31,6 +31,8 @@ import xyz.thm.addon.THMAddon;
 import xyz.thm.addon.utils.StashTracker;
 import xyz.thm.addon.utils.THMUtils;
 import xyz.thm.addon.utils.TrustedHttp;
+import xyz.thm.addon.utils.server.ServerStatusHandler;
+import xyz.thm.addon.utils.server.ServerStatusHandler.ServerState;
 
 import java.io.File;
 import java.io.IOException;
@@ -144,6 +146,14 @@ public class StashFinderTHM extends Module {
         .build()
     );
 
+    private final Setting<Boolean> restartRoute = sgSearch.add(new BoolSetting.Builder()
+        .name("restart-route")
+        .description("Restarts Elytra Route when it stops because of an error.")
+        .defaultValue(true)
+        .visible(autoFly::get)
+        .build()
+    );
+
     private final Setting<Integer> progress = sgSearch.add(new IntSetting.Builder()
         .name("progress")
         .description("Next spiral corner. Set to 0 to start a new search.")
@@ -164,10 +174,17 @@ public class StashFinderTHM extends Module {
     private final StashTracker tracker = new StashTracker();
     private String dimension = "";
     private boolean routeStarted;
+    // True only when this module switched Elytra Route on itself.
+    private boolean ownsRoute;
     private boolean startPending;
+    private int pruneTicks;
+    private int restartTicks;
+    private int restartsInARow;
+    private static final int RESTART_DELAY_TICKS = 200;
+    private static final int MAX_RESTARTS = 3;
 
     public StashFinderTHM() {
-        super(THMAddon.MAIN, "stash-finder-thm", "Flies a search spiral and reports chest stashes to Discord.");
+        super(THMAddon.MAIN, "stash-finder-thm", "Flies a search spiral and reports chest stashes in chat or to Discord.");
     }
 
     @Override
@@ -175,8 +192,11 @@ public class StashFinderTHM extends Module {
         tracker.clearChunks();
         dimension = "";
         routeStarted = false;
-        // Meteor re-enables saved modules before a world exists; start once the player is in game.
-        startPending = mc.level == null || mc.player == null;
+        ownsRoute = false;
+        restartTicks = 0;
+        restartsInARow = 0;
+        // Meteor re-enables saved modules before a world exists; start once the player is on the main server, not in the lobby.
+        startPending = mc.level == null || mc.player == null || !onMainServer();
         if (!startPending) beginSearch();
     }
 
@@ -197,11 +217,13 @@ public class StashFinderTHM extends Module {
 
     @Override
     public void onDeactivate() {
-        // Stop the route whenever auto-fly owns it, even after a restart lost routeStarted.
+        // Stop a route this module started or still steers along the spiral; a route to another destination keeps flying.
         ElytraRoute route = ElytraRoute.INSTANCE;
-        if ((routeStarted || autoFly.get()) && route != null && route.isActive()) route.toggle();
+        if (route != null && route.isActive() && (ownsRoute || (autoFly.get() && aimedAtWaypoint(route)))) route.toggle();
+        ownsRoute = false;
         routeStarted = false;
         startPending = false;
+        restartTicks = 0;
     }
 
     @Override
@@ -226,21 +248,43 @@ public class StashFinderTHM extends Module {
     private void onTick(TickEvent.Post event) {
         if (mc.level == null || mc.player == null) return;
         if (startPending) {
+            if (!onMainServer()) return;
             startPending = false;
             beginSearch();
             return;
         }
         syncDimension();
+        if (++pruneTicks >= 100) {
+            pruneTicks = 0;
+            tracker.pruneChunks(mc.player.chunkPosition().x(), mc.player.chunkPosition().z(),
+                mc.options.renderDistance().get() + clusterRadius.get() + 2);
+        }
+        if (restartTicks > 0 && --restartTicks == 0) {
+            if (onMainServer()) {
+                info("Restarting Elytra Route (%d/%d).", restartsInARow, MAX_RESTARTS);
+                startRoute();
+            } else {
+                restartTicks = RESTART_DELAY_TICKS;
+            }
+            return;
+        }
         if (!autoFly.get() || !routeStarted) return;
 
         ElytraRoute route = ElytraRoute.INSTANCE;
         if (route == null || !route.isActive()) {
             routeStarted = false;
-            warning("Elytra Route stopped. Still scanning; re-enable Stash Finder to keep flying.");
+            if (ownsRoute && restartRoute.get() && route != null && route.stoppedByError() && restartsInARow < MAX_RESTARTS) {
+                restartsInARow++;
+                restartTicks = RESTART_DELAY_TICKS;
+                warning("Elytra Route stopped. Restarting it in %d seconds.", RESTART_DELAY_TICKS / 20);
+            } else {
+                warning("Elytra Route stopped. Still scanning; re-enable Stash Finder to keep flying.");
+            }
             return;
         }
 
         if (route.getRemainingDistance() <= route.getArrivalRadius() + WAYPOINT_LEAD) {
+            restartsInARow = 0;
             progress.set(progress.get() + 1);
             if (!aimAtWaypoint(route)) {
                 info("Search area finished.");
@@ -259,8 +303,20 @@ public class StashFinderTHM extends Module {
             info("Search area finished. Set progress to 0 to start again.");
             return;
         }
-        if (!route.isActive()) route.toggle();
+        if (!route.isActive()) {
+            route.toggle();
+            ownsRoute = route.isActive();
+        }
         routeStarted = route.isActive();
+    }
+
+    private boolean onMainServer() {
+        return ServerStatusHandler.getInstance().getCommittedState() == ServerState.MAIN_SERVER;
+    }
+
+    private boolean aimedAtWaypoint(ElytraRoute route) {
+        int[] wp = StashTracker.spiralWaypoint(centerX.get(), centerZ.get(), laneSpacing.get(), progress.get());
+        return route.getDestinationX() == wp[0] && route.getDestinationZ() == wp[1];
     }
 
     /** Points the route at the current spiral corner; false once the spiral leaves the search area. */

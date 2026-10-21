@@ -52,9 +52,19 @@ public final class ElytraNavigator {
     private static final int DIRECT_RECHECK_TICKS = 10;
     private static final int[][] PAD = {{0, 0, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
 
+    private static final int DIG_WINDOW_TICKS = 200;
+    private static final double AIR_MIN_PROGRESS = 8.0;
+    private static final int WIDE_SEARCH_FACTOR = 3;
+
     private final Terrain terrain;
     private final Config cfg;
     private final Terrain padded;
+    private final Terrain air;
+    private final Terrain airPadded;
+    // Digging is allowed only for a while after an air-only search found no way around.
+    private long digUntil;
+    private boolean searchAir;
+    private boolean wideAirSearch;
 
     private long tick;
     private long holdUntil;
@@ -90,7 +100,24 @@ public final class ElytraNavigator {
     public ElytraNavigator(Terrain terrain, Config cfg) {
         this.terrain = terrain;
         this.cfg = cfg;
-        this.padded = new Terrain() {
+        this.padded = pad(terrain);
+        this.air = new Terrain() {
+            @Override
+            public boolean blocked(int x, int y, int z) {
+                return terrain.blocked(x, y, z);
+            }
+
+            @Override
+            public boolean loaded(int x, int z) {
+                return terrain.loaded(x, z);
+            }
+        };
+        this.airPadded = pad(air);
+        reset();
+    }
+
+    private static Terrain pad(Terrain terrain) {
+        return new Terrain() {
             @Override
             public boolean blocked(int x, int y, int z) {
                 return terrain.blocked(x, y, z)
@@ -117,7 +144,26 @@ public final class ElytraNavigator {
                 return worst;
             }
         };
-        reset();
+    }
+
+    private boolean digAllowed() {
+        return tick < digUntil;
+    }
+
+    /** No usable air route: retry once with a wider search, since a big detour can need more nodes; then allow digging. */
+    private void airSearchFailed() {
+        if (!wideAirSearch) {
+            wideAirSearch = true;
+            zones.clear();
+            return;
+        }
+        digUntil = tick + DIG_WINDOW_TICKS;
+        wideAirSearch = false;
+    }
+
+    /** True while the route may dig because no way through the air was found. */
+    public boolean digging() {
+        return digAllowed();
     }
 
     public void reset() {
@@ -140,11 +186,15 @@ public final class ElytraNavigator {
         provLeft = 0;
         anchorTick = -1;
         holdUntil = 0;
+        digUntil = 0;
+        wideAirSearch = false;
     }
 
     /** Call while the route is digging: being held up by a block that is being mined does not count as stuck. */
     public void hold(int ticks) {
         holdUntil = Math.max(holdUntil, tick + ticks);
+        // A block that is already being broken keeps the dig window open.
+        if (digAllowed()) digUntil = Math.max(digUntil, tick + ticks + 40);
     }
 
     public int stuckLevel() {
@@ -237,7 +287,7 @@ public final class ElytraNavigator {
         if (search == null && path == null) startSearch(px, py, pz, goalX, goalZ, goalRadius);
 
         if (search != null) {
-            int budget = searchFresh ? cfg.nodesPerTick * 2 : cfg.nodesPerTick;
+            int budget = searchFresh || (searchAir && wideAirSearch) ? cfg.nodesPerTick * 2 : cfg.nodesPerTick;
             searchFresh = false;
             if (search.step(budget)) {
                 Steer failure = adoptSearch(px, py, pz, gx, gz);
@@ -275,9 +325,10 @@ public final class ElytraNavigator {
         return new Steer(Mode.DIRECT, ax, py + dy, az, vertical);
     }
 
-    /** Like lineClear, but a few mineable cells may stand in the way. */
+    /** Like lineClear, but while digging is allowed a few mineable cells may stand in the way. */
     private boolean lineDiggable(double ax, double ay, double az, double bx, double by, double bz) {
         if (ElytraPathPlanner.lineClear(terrain, ax, ay, az, bx, by, bz, cfg.radius)) return true;
+        if (!digAllowed()) return false;
 
         Set<Long> dig = new HashSet<>();
         double dx = bx - ax, dy = by - ay, dz = bz - az;
@@ -327,9 +378,12 @@ public final class ElytraNavigator {
 
         searchPadded = paddedPlans && !retryUnpadded;
         retryUnpadded = false;
+        searchAir = !digAllowed();
+        Terrain t = searchAir ? (searchPadded ? airPadded : air) : (searchPadded ? padded : terrain);
         search = new ElytraPathPlanner.Search(
-            searchPadded ? padded : terrain, start, goalX, goalZ, goalRadius, cfg.preferredY,
-            cfg.range, Math.max(cfg.minY, low), Math.min(cfg.maxY, high), cfg.maxNodes, active
+            t, start, goalX, goalZ, goalRadius, cfg.preferredY,
+            cfg.range, Math.max(cfg.minY, low), Math.min(cfg.maxY, high),
+            searchAir && wideAirSearch ? cfg.maxNodes * WIDE_SEARCH_FACTOR : cfg.maxNodes, active
         );
         searchFresh = true;
     }
@@ -340,6 +394,7 @@ public final class ElytraNavigator {
         boolean reached = search.reachedGoal();
         boolean exhausted = search.exhausted();
         boolean wasPadded = searchPadded;
+        boolean wasAir = searchAir;
         search = null;
 
         if (result.size() <= 1) {
@@ -347,8 +402,25 @@ public final class ElytraNavigator {
                 retryUnpadded = true;
                 return null;
             }
+            if (wasAir && !reached) {
+                airSearchFailed();
+                return null;
+            }
             return beginUnstick(px, py, pz, gx, gz);
         }
+
+        // The air search ran out without getting closer: plan again, this time through mineable blocks.
+        if (wasAir && !reached && exhausted) {
+            Pos last = result.get(result.size() - 1);
+            double gained = Math.hypot(gx - px, gz - pz) - Math.hypot(gx - (last.x() + 0.5), gz - (last.z() + 0.5));
+            // A long detour along a wall gains nothing yet but still leads somewhere new.
+            double reach = dist3(px, py, pz, last.x() + 0.5, last.y() + 0.5, last.z() + 0.5);
+            if (gained < AIR_MIN_PROGRESS && reach < AIR_MIN_PROGRESS) {
+                airSearchFailed();
+                return null;
+            }
+        }
+        if (reached || !exhausted) wideAirSearch = false;
 
         int join = 0;
         double joinDist = Double.MAX_VALUE;

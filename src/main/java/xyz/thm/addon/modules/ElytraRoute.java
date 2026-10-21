@@ -6,6 +6,9 @@
 
 package xyz.thm.addon.modules;
 
+import baritone.api.BaritoneAPI;
+import baritone.api.IBaritone;
+import baritone.api.pathing.goals.GoalXZ;
 import meteordevelopment.meteorclient.events.game.GameLeftEvent;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -28,6 +31,7 @@ import meteordevelopment.meteorclient.utils.player.SlotUtils;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.meteorclient.utils.world.BlockUtils;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.CameraType;
 import net.minecraft.client.gui.components.AbstractButton;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.DisconnectedScreen;
@@ -142,6 +146,13 @@ public class ElytraRoute extends Module {
     private final Setting<Boolean> autoFreeLook = sgRoute.add(new BoolSetting.Builder()
         .name("auto-freelook")
         .description("Enable Meteor FreeLook while the route module runs.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> togglePerspective = sgRoute.add(new BoolSetting.Builder()
+        .name("toggle-perspective")
+        .description("Switches to third person while active, then restores your perspective.")
         .defaultValue(true)
         .build()
     );
@@ -418,7 +429,7 @@ public class ElytraRoute extends Module {
 
     private final Setting<Boolean> mineObstacles = sgMining.add(new BoolSetting.Builder()
         .name("mine-obstacles")
-        .description("Breaks blocks in the way with a pickaxe while flying, instead of flying around them.")
+        .description("Breaks blocks in the way with a pickaxe when there is no way to fly around them.")
         .defaultValue(true)
         .build()
     );
@@ -486,20 +497,46 @@ public class ElytraRoute extends Module {
         .build()
     );
 
-    private final Setting<Boolean> pathMinerFallback = sgMining.add(new BoolSetting.Builder()
-        .name("pathminer-fallback")
-        .description("When no way through the air exists, lands and lets Path Miner dig on the ground, then flies on.")
+    private final Setting<Boolean> baritoneFallback = sgMining.add(new BoolSetting.Builder()
+        .name("baritone-fallback")
+        .description("When no way through the air exists, lands and lets Baritone walk ahead on the ground, then flies on.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<Integer> fallbackBlocks = sgMining.add(new IntSetting.Builder()
-        .name("fallback-blocks")
-        .description("How far Path Miner digs before the route tries to fly again.")
-        .defaultValue(60)
-        .range(10, 500)
-        .sliderRange(20, 200)
-        .visible(pathMinerFallback::get)
+    private final Setting<Integer> fallbackDistance = sgMining.add(new IntSetting.Builder()
+        .name("fallback-distance")
+        .description("How far Baritone walks toward the destination before the route tries to fly again.")
+        .defaultValue(64)
+        .range(16, 512)
+        .sliderRange(16, 256)
+        .visible(baritoneFallback::get)
+        .build()
+    );
+
+    private final Setting<Boolean> fallbackBreak = sgMining.add(new BoolSetting.Builder()
+        .name("fallback-break-blocks")
+        .description("Lets Baritone break blocks on the way.")
+        .defaultValue(true)
+        .visible(baritoneFallback::get)
+        .build()
+    );
+
+    private final Setting<Boolean> fallbackPlace = sgMining.add(new BoolSetting.Builder()
+        .name("fallback-place-blocks")
+        .description("Lets Baritone place blocks on the way.")
+        .defaultValue(false)
+        .visible(baritoneFallback::get)
+        .build()
+    );
+
+    private final Setting<Integer> fallbackTimeout = sgMining.add(new IntSetting.Builder()
+        .name("fallback-timeout")
+        .description("Seconds without getting closer before Baritone gives up.")
+        .defaultValue(30)
+        .range(5, 300)
+        .sliderRange(10, 120)
+        .visible(baritoneFallback::get)
         .build()
     );
 
@@ -589,6 +626,7 @@ public class ElytraRoute extends Module {
     private long lastHomeSetMs;
     private static final long HOME_OVERRIDE_WINDOW_MS = 5_000L;
     private long homeOverrideUntilMs;
+    private String homeOverrideName = "";
     private boolean finalHomeSaveSent;
     private long routeStartMs;
     private double routeStartDistance;
@@ -596,6 +634,10 @@ public class ElytraRoute extends Module {
 
     private FreeLook freeLookModule;
     private boolean managedFreeLook;
+    private CameraType previousPerspective;
+    private boolean perspectiveChanged;
+    private long lastErrorMs;
+    private static final long STOPPED_BY_ERROR_WINDOW_MS = 3_000L;
 
     private Rotation rotationModule;
     private Setting<Rotation.LockMode> rotationYawLockMode;
@@ -675,8 +717,6 @@ public class ElytraRoute extends Module {
     private static final double MINE_REACH = 4.4;
     private static final double MINE_LOOKAHEAD = 5.0;
     private static final int MINE_TARGET_TIMEOUT = 240;
-    // Not registered in Modules, so it stays out of the module list; toggling still subscribes its events.
-    private final PathMiner pathMiner = new PathMiner();
     private boolean miningActive;
     private int debugTicks;
     private boolean miningHover;
@@ -691,6 +731,19 @@ public class ElytraRoute extends Module {
     private final Set<Long> mineFailed = new HashSet<>();
     private boolean minerStarted;
     private int minerRuns;
+    private int takeoffClearTicks;
+    private BlockPos fallbackGoal;
+    private double fallbackBestDist;
+    private long fallbackProgressMs;
+    private boolean fallbackStopped;
+    // Baritone settings changed for the fallback, restored when it ends.
+    private boolean baritoneSettingsSaved;
+    private boolean savedAllowBreak, savedAllowPlace;
+    private static final double RESUME_FLIGHT_CHECK_DISTANCE = 16.0;
+    private static final double RESUME_OPEN_HEIGHT = 4.0;
+    private static final int TAKEOFF_CLEAR_TIMEOUT = 200;
+    private static final double FALLBACK_GOAL_REACHED = 3.0;
+    private static final int TAKEOFF_HEADROOM = 4;
 
     private RepairStep repairStep = RepairStep.PLAN;
     private boolean repairSuppressed;
@@ -702,6 +755,7 @@ public class ElytraRoute extends Module {
     private int repairTicks;
     private int repairShulkerCount;
     private int repairChestCount;
+    private int repairBottleCount;
     private int repairLastDamage;
     private int repairThrowsWithoutProgress;
     private boolean repairActionIssued;
@@ -797,14 +851,18 @@ public class ElytraRoute extends Module {
         restoreRotationSnapshot();
         stopMining();
         mineFailed.clear();
+        if (minerStarted) stopBaritoneFallback();
         minerStarted = false;
         minerRuns = 0;
-        if (state == State.MINER && pathMiner.isActive()) pathMiner.toggle();
 
         if (managedFreeLook && freeLookModule != null && freeLookModule.isActive()) {
             freeLookModule.toggle();
         }
         managedFreeLook = false;
+        if (perspectiveChanged) {
+            mc.options.setCameraType(previousPerspective);
+            perspectiveChanged = false;
+        }
 
         closeHandledRestockScreenIfOpen();
         clearSelectedRestockSource();
@@ -1034,6 +1092,14 @@ public class ElytraRoute extends Module {
             freeLookModule.toggle();
         }
 
+        if (togglePerspective.get() && !perspectiveChanged) {
+            previousPerspective = mc.options.getCameraType();
+            if (previousPerspective != CameraType.THIRD_PERSON_BACK) {
+                mc.options.setCameraType(CameraType.THIRD_PERSON_BACK);
+                perspectiveChanged = true;
+            }
+        }
+
         rotationModule = Modules.get().get(Rotation.class);
         cacheRotationSettings();
     }
@@ -1064,11 +1130,13 @@ public class ElytraRoute extends Module {
             return true;
         }
 
-        mainServerGateTicks++;
-        releaseMovement();
-        restoreRotationSnapshot();
-        closeHandledRestockScreenIfOpen();
-        if (mc.player != null && !routeStartPending) pauseBounceElytraFlyForGroundControl();
+        // Release the route's keys once; doing it every tick locks the player in place in the lobby.
+        if (++mainServerGateTicks == 1) {
+            releaseMovement();
+            restoreRotationSnapshot();
+            closeHandledRestockScreenIfOpen();
+            if (mc.player != null && !routeStartPending) pauseBounceElytraFlyForGroundControl();
+        }
 
         if (serverState == ServerState.UNKNOWN
             && mainServerGateTicks < MAIN_SERVER_GATE_UNKNOWN_GRACE_TICKS
@@ -1188,6 +1256,17 @@ public class ElytraRoute extends Module {
         if (!(mc.gui.screen() instanceof DisconnectedScreen)) return;
         info("Clearing stale DisconnectedScreen while Elytra Route is live in-world.");
         mc.gui.setScreen(null);
+    }
+
+    @Override
+    public void error(String message, Object... args) {
+        lastErrorMs = System.currentTimeMillis();
+        super.error(message, args);
+    }
+
+    /** True when the route switched itself off because of an error just now, not because the player stopped it. */
+    public boolean stoppedByError() {
+        return !isActive() && System.currentTimeMillis() - lastErrorMs < STOPPED_BY_ERROR_WINDOW_MS;
     }
 
     private ServerReconnectService reconnectService() {
@@ -1681,6 +1760,15 @@ public class ElytraRoute extends Module {
             restoreRotationSnapshot();
             takeoffFailures++;
             if (takeoffFailures >= TAKEOFF_MAX_FAILURES) {
+                // No room to take off here: walk on with Baritone and try again further along.
+                if (baritoneFallback.get() && minerRuns < 3) {
+                    warning("Takeoff failed here. Walking on with Baritone to find more room.");
+                    takeoffFailures = 0;
+                    minerStarted = false;
+                    state = State.MINER;
+                    stateTicks = 0;
+                    return;
+                }
                 error("Glide takeoff failed after %d attempts.", TAKEOFF_MAX_FAILURES);
                 toggle();
                 return;
@@ -1731,8 +1819,8 @@ public class ElytraRoute extends Module {
         if (navSteer != null && navSteer.mode() == ElytraNavigator.Mode.FAILED) {
             navSteer = null;
             stopMining();
-            if (pathMinerFallback.get() && minerRuns < 3 && updateMineTool()) {
-                warning("No way through the air was found. Landing to dig with Path Miner.");
+            if (baritoneFallback.get() && minerRuns < 3) {
+                warning("No way through the air was found. Landing to continue on foot with Baritone.");
                 beginLanding(LandingReason.MINER);
             } else {
                 warning("No way around the obstacle was found. Landing.");
@@ -2810,6 +2898,7 @@ public class ElytraRoute extends Module {
             ChatUtils.sendPlayerMsg("/sethome " + homeName.get());
             homeSaveNextAtMs = now + (homeSaveIntervalMinutes.get() * 60_000L);
             homeOverrideUntilMs = now + HOME_OVERRIDE_WINDOW_MS;
+            homeOverrideName = homeName.get();
             return true;
         }
 
@@ -2820,7 +2909,11 @@ public class ElytraRoute extends Module {
         boolean set = (step & 1) == 1;
         ChatUtils.sendPlayerMsg((set ? "/sethome " : "/delhome ") + name);
         lastHomeCommandMs = now;
-        if (set) lastHomeSetMs = now;
+        if (set) {
+            lastHomeSetMs = now;
+            homeOverrideUntilMs = now + HOME_OVERRIDE_WINDOW_MS;
+            homeOverrideName = name;
+        }
         homeCycleStep.set((step + 1) & 3);
         info(set ? "Saved home %s." : "Deleted older home %s for the next save.", name);
         return set;
@@ -2836,7 +2929,7 @@ public class ElytraRoute extends Module {
             if (element instanceof AbstractButton button && button.getMessage().getString().equalsIgnoreCase("Override")) {
                 button.onPress(new KeyEvent(GLFW.GLFW_KEY_ENTER, 0, 0));
                 homeOverrideUntilMs = 0L;
-                info("Overwrote home %s.", homeName.get());
+                info("Overwrote home %s.", homeOverrideName);
                 return;
             }
         }
@@ -4016,7 +4109,8 @@ public class ElytraRoute extends Module {
 
     /** Returns true while the player should hold still for a block that is being broken right in front of it. */
     private boolean tickFlightMining() {
-        if (!miningActive || navSteer == null || mc.player == null) {
+        // Only dig once the navigator found no way through the air; otherwise blocks in the way are flown around.
+        if (!miningActive || navSteer == null || mc.player == null || !navigator.digging()) {
             stopMining();
             return false;
         }
@@ -4173,22 +4267,54 @@ public class ElytraRoute extends Module {
         mc.options.keyShift.setDown(y > hoverY + 0.5);
     }
 
-    // ---- Path Miner fallback: dig on the ground when the air route is closed ----
+    // ---- Baritone fallback: walk (and dig) on the ground like #goto when the air route is closed ----
 
     private void tickMinerFallback() {
-        PathMiner miner = pathMiner;
         if (!minerStarted) {
             releaseMovement();
-            if (!miner.isActive()) miner.runLimited(fallbackBlocks.get());
+            restoreRotationSnapshot();
+            pauseBounceElytraFlyForGroundControl();
+            if (!startBaritoneFallback()) {
+                error("Elytra Route stopped: Baritone could not be started.");
+                toggle();
+                return;
+            }
             minerStarted = true;
+            takeoffClearTicks = 0;
             stateTicks = 0;
             return;
         }
 
-        if (miner.isActive()) return;
+        IBaritone baritone = primaryBaritone();
+        boolean walking = !fallbackStopped && baritone != null && baritone.getCustomGoalProcess().isActive();
+        double dist = Math.sqrt(mc.player.blockPosition().distSqr(fallbackGoal));
+        if (dist < fallbackBestDist - 1.0) {
+            fallbackBestDist = dist;
+            fallbackProgressMs = System.currentTimeMillis();
+        }
+
+        if (walking) {
+            // Fly on as soon as the air ahead is open, not only once the goal is reached.
+            if (++stateTicks % 10 == 0 && canResumeFlight()) {
+                info("The way through the air is open again. Taking off.");
+                stopBaritoneFallback();
+            } else if (System.currentTimeMillis() - fallbackProgressMs > fallbackTimeout.get() * 1000L) {
+                warning("Baritone made no progress for %d seconds.", fallbackTimeout.get());
+                stopBaritoneFallback();
+            } else {
+                return;
+            }
+        } else if (!fallbackStopped) {
+            stopBaritoneFallback();
+        }
+
+        // Only failed runs count toward giving up; a reached goal is progress.
+        boolean reached = dist <= FALLBACK_GOAL_REACHED || canResumeFlight();
+        if (!clearTakeoffRoom()) return;
+        stopMining();
 
         minerStarted = false;
-        minerRuns++;
+        minerRuns = reached ? 0 : minerRuns + 1;
         navigator.reset();
         navSteer = null;
         stateTicks = 0;
@@ -4196,11 +4322,122 @@ public class ElytraRoute extends Module {
         if (isInsideArrivalRadius()) {
             state = State.ARRIVED_WAIT;
         } else if (minerRuns >= 3) {
-            error("Elytra Route stopped: Path Miner could not open a way after several tries.");
+            error("Elytra Route stopped: Baritone could not find a way after several tries.");
             toggle();
         } else {
             state = State.TAKEOFF_AWAIT_GROUND;
         }
+    }
+
+    private IBaritone primaryBaritone() {
+        try {
+            return BaritoneAPI.getProvider().getPrimaryBaritone();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** Sends Baritone toward the destination for up to fallback-distance blocks, like {@code #goto x z}. */
+    private boolean startBaritoneFallback() {
+        IBaritone baritone = primaryBaritone();
+        if (baritone == null) return false;
+
+        double dx = destinationX.get() + 0.5 - mc.player.getX();
+        double dz = destinationZ.get() + 0.5 - mc.player.getZ();
+        double len = Math.hypot(dx, dz);
+        double step = Math.min(fallbackDistance.get(), len);
+        int gx = len < 1.0 ? destinationX.get() : Mth.floor(mc.player.getX() + dx / len * step);
+        int gz = len < 1.0 ? destinationZ.get() : Mth.floor(mc.player.getZ() + dz / len * step);
+
+        if (!baritoneSettingsSaved) {
+            savedAllowBreak = BaritoneAPI.getSettings().allowBreak.value;
+            savedAllowPlace = BaritoneAPI.getSettings().allowPlace.value;
+            baritoneSettingsSaved = true;
+        }
+        BaritoneAPI.getSettings().allowBreak.value = fallbackBreak.get();
+        BaritoneAPI.getSettings().allowPlace.value = fallbackPlace.get();
+
+        fallbackGoal = new BlockPos(gx, mc.player.getBlockY(), gz);
+        fallbackBestDist = Math.sqrt(mc.player.blockPosition().distSqr(fallbackGoal));
+        fallbackProgressMs = System.currentTimeMillis();
+        fallbackStopped = false;
+        baritone.getCustomGoalProcess().setGoalAndPath(new GoalXZ(gx, gz));
+        return true;
+    }
+
+    private void stopBaritoneFallback() {
+        fallbackStopped = true;
+        IBaritone baritone = primaryBaritone();
+        if (baritone != null) {
+            try {
+                baritone.getPathingBehavior().cancelEverything();
+                baritone.getCustomGoalProcess().setGoal(null);
+                baritone.getInputOverrideHandler().clearAllKeys();
+            } catch (Throwable ignored) {
+            }
+        }
+        if (baritoneSettingsSaved) {
+            BaritoneAPI.getSettings().allowBreak.value = savedAllowBreak;
+            BaritoneAPI.getSettings().allowPlace.value = savedAllowPlace;
+            baritoneSettingsSaved = false;
+        }
+        releaseMovement();
+    }
+
+    /** Feet Y the fallback digs toward: one below fly-y-level, so a takeoff from there reaches it at once. */
+    private int minerTargetFeetY() {
+        int min = mc.level.getMinY() + 2;
+        int max = mc.level.getMaxY() - 4;
+        return Mth.clamp(flyYLevel.get() - 1, min, max);
+    }
+
+    /** True on the ground when the air toward the destination is open: at flight height, or in a space tall enough to climb in flight. */
+    private boolean canResumeFlight() {
+        if (!mc.player.onGround()) return false;
+        if (!hasTakeoffHeadroom()) return false;
+
+        double dx = destinationX.get() + 0.5 - mc.player.getX();
+        double dz = destinationZ.get() + 0.5 - mc.player.getZ();
+        double len = Math.hypot(dx, dz);
+        if (len < 1.0) return false;
+
+        worldTerrain.newTick();
+        double ahead = Math.min(RESUME_FLIGHT_CHECK_DISTANCE, len);
+        double ex = mc.player.getX() + dx / len * ahead, ez = mc.player.getZ() + dz / len * ahead;
+        double y = mc.player.getY() + 1.0;
+        if (!ElytraPathPlanner.lineClear(worldTerrain, mc.player.getX(), y, mc.player.getZ(), ex, y, ez, 0.35)) return false;
+        if (Math.abs(mc.player.getBlockY() - minerTargetFeetY()) <= 2) return true;
+
+        double top = y + RESUME_OPEN_HEIGHT;
+        return ElytraPathPlanner.lineClear(worldTerrain, mc.player.getX(), top, mc.player.getZ(), ex, top, ez, 0.35);
+    }
+
+    /** True when the cells a double-jump takeoff passes through, up to {@link #TAKEOFF_HEADROOM} above the feet, are open. */
+    private boolean hasTakeoffHeadroom() {
+        BlockPos feet = mc.player.blockPosition();
+        worldTerrain.newTick();
+        for (int dy = 2; dy <= TAKEOFF_HEADROOM; dy++) {
+            if (worldTerrain.blocked(feet.getX(), feet.getY() + dy, feet.getZ())) return false;
+        }
+        return true;
+    }
+
+    /** Breaks the blocks above the head that a jump-takeoff needs; true once clear, unbreakable or timed out. */
+    private boolean clearTakeoffRoom() {
+        if (++takeoffClearTicks > TAKEOFF_CLEAR_TIMEOUT) return true;
+
+        BlockPos feet = mc.player.blockPosition();
+        worldTerrain.newTick();
+        for (int dy = 2; dy <= TAKEOFF_HEADROOM; dy++) {
+            BlockPos pos = feet.above(dy);
+            if (!worldTerrain.blocked(pos.getX(), pos.getY(), pos.getZ())) continue;
+            if (worldTerrain.mineCost(pos.getX(), pos.getY(), pos.getZ()) < 0f || !updateMineTool()) return true;
+
+            selectMineTool();
+            BlockUtils.breakBlock(pos, true);
+            return false;
+        }
+        return true;
     }
 
     // ---- Elytra repair: mend nearly broken elytras with XP bottles, optionally fetched from an Ender Chest ----
@@ -4281,6 +4518,7 @@ public class ElytraRoute extends Module {
         repairTicks = 0;
         repairShulkerCount = 0;
         repairChestCount = 0;
+        repairBottleCount = 0;
         repairLastDamage = -1;
         repairThrowsWithoutProgress = 0;
         repairActionIssued = false;
@@ -4463,7 +4701,7 @@ public class ElytraRoute extends Module {
         if (repairActionIssued) {
             boolean arrived = repairShulkerKey != null
                 ? countInventoryShulkerBoxes() > repairShulkerCount
-                : countXpBottles() > repairChestCount;
+                : countXpBottles() > repairBottleCount;
             if (arrived) {
                 setRepairStep(RepairStep.CHEST_CLOSE);
             } else if (++repairTicks > 20) {
@@ -4480,7 +4718,7 @@ public class ElytraRoute extends Module {
         int loose = findContainerSlot(stack -> stack.is(Items.EXPERIENCE_BOTTLE));
         if (loose != -1) {
             repairShulkerKey = null;
-            repairChestCount = countXpBottles();
+            repairBottleCount = countXpBottles();
             InvUtils.shiftClick().slotId(loose);
         } else {
             int shulker = findContainerSlot(stack -> isShulkerBox(stack) && countXpBottlesInShulker(stack) > 0);
