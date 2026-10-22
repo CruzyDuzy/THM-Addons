@@ -273,7 +273,10 @@ public class StashFinderTHM extends Module {
         ElytraRoute route = ElytraRoute.INSTANCE;
         if (route == null || !route.isActive()) {
             routeStarted = false;
-            if (ownsRoute && restartRoute.get() && route != null && route.stoppedByError() && restartsInARow < MAX_RESTARTS) {
+            // A stopped route is no longer ours; a restart claims it again, a manual start never does.
+            boolean owned = ownsRoute;
+            ownsRoute = false;
+            if (owned && restartRoute.get() && route != null && route.stoppedByError() && restartsInARow < MAX_RESTARTS) {
                 restartsInARow++;
                 restartTicks = RESTART_DELAY_TICKS;
                 warning("Elytra Route stopped. Restarting it in %d seconds.", RESTART_DELAY_TICKS / 20);

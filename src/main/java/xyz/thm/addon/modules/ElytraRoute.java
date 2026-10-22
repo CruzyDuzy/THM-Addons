@@ -1177,6 +1177,10 @@ public class ElytraRoute extends Module {
             resetRepairRuntime();
         }
 
+        // Restores Baritone's settings and drops its old goal; the next fallback starts fresh.
+        if (minerStarted || baritoneSettingsSaved) stopBaritoneFallback();
+        minerStarted = false;
+
         if (placedShulkerPos != null) {
             reconnectPaused = false;
             reconnectResumeDelayStarted = false;
@@ -1903,7 +1907,11 @@ public class ElytraRoute extends Module {
             case OUT_OF_ELYTRAS -> state = State.OUT_OF_ELYTRAS_WAIT;
             case RESTOCK -> state = State.RESTOCK_MOVE_TO_PAD;
             case REPAIR -> state = State.REPAIR;
-            case MINER -> state = State.MINER;
+            case MINER -> {
+                if (minerStarted || baritoneSettingsSaved) stopBaritoneFallback();
+                minerStarted = false;
+                state = State.MINER;
+            }
             case BLOCKED -> {
                 error("Elytra Route stopped: the way to the destination is blocked.");
                 toggle();
