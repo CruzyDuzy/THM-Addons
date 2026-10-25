@@ -636,8 +636,6 @@ public class ElytraRoute extends Module {
     private boolean managedFreeLook;
     private CameraType previousPerspective;
     private boolean perspectiveChanged;
-    private long lastErrorMs;
-    private static final long STOPPED_BY_ERROR_WINDOW_MS = 3_000L;
 
     private Rotation rotationModule;
     private Setting<Rotation.LockMode> rotationYawLockMode;
@@ -790,18 +788,6 @@ public class ElytraRoute extends Module {
 
     public int getDestinationZ() {
         return destinationZ.get();
-    }
-
-    public double getArrivalRadius() {
-        return arrivalRadius.get();
-    }
-
-    /** Retargets the route, e.g. to Stash Finder's next search corner. */
-    public void setDestination(int x, int z) {
-        destinationX.set(x);
-        destinationZ.set(z);
-        navigator.reset();
-        navSteer = null;
     }
 
     public ElytraRoute() {
@@ -1260,17 +1246,6 @@ public class ElytraRoute extends Module {
         if (!(mc.gui.screen() instanceof DisconnectedScreen)) return;
         info("Clearing stale DisconnectedScreen while Elytra Route is live in-world.");
         mc.gui.setScreen(null);
-    }
-
-    @Override
-    public void error(String message, Object... args) {
-        lastErrorMs = System.currentTimeMillis();
-        super.error(message, args);
-    }
-
-    /** True when the route switched itself off because of an error just now, not because the player stopped it. */
-    public boolean stoppedByError() {
-        return !isActive() && System.currentTimeMillis() - lastErrorMs < STOPPED_BY_ERROR_WINDOW_MS;
     }
 
     private ServerReconnectService reconnectService() {

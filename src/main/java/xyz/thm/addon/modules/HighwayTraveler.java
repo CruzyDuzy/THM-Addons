@@ -398,6 +398,8 @@ public class HighwayTraveler extends Module {
     private int flyDescendTicks;
     // Hold-Y hysteresis: climb from one block below the level back up to it, sink from one block above.
     private boolean flyClimbing, flySinking;
+    // Cleared whenever another method is selected, so switching to Fly later sets up floor and lane first.
+    private boolean flyInitialized;
 
     public HighwayTraveler() {
         super(THMAddon.MAIN, "highway-traveler",
@@ -424,29 +426,35 @@ public class HighwayTraveler extends Module {
         handoffToBuilder   = true;
         bouncePrevFov      = mc.options.fovEffectScale().get();
         prevPos     = new Vec3(mc.player.getX(), mc.player.getY(), mc.player.getZ());
-        flyDescendTicks = 0;
-        flyClimbing = false;
-        flySinking = false;
+        flyInitialized = false;
 
-        if (methodSetting.get() == TravelMethod.FLY) {
-            if (!isElytraFlyReady()) {
-                toggle();
-                return;
-            }
-            baseFeetY = findFloorFeetY(mc.player);
-            if (baseFeetY == Integer.MIN_VALUE) {
-                error("Fly mode: no highway floor found below you.");
-                toggle();
-                return;
-            }
-            laneX0 = mc.player.getBlockX() + 0.5;
-            laneZ0 = mc.player.getBlockZ() + 0.5;
-            navigator.reset();
-        }
+        if (methodSetting.get() == TravelMethod.FLY && !initFly()) return;
 
         if (bounceEnabled()) bounceRecast(mc.player);
 
         info("Heading " + activeDir.label + " (yaw " + (int) hwYaw + ")");
+    }
+
+    /** Sets up Fly mode from the current position; false (and module off) without Elytra Fly or a floor below. */
+    private boolean initFly() {
+        if (!isElytraFlyReady()) {
+            toggle();
+            return false;
+        }
+        baseFeetY = findFloorFeetY(mc.player);
+        if (baseFeetY == Integer.MIN_VALUE) {
+            error("Fly mode: no highway floor found below you.");
+            toggle();
+            return false;
+        }
+        laneX0 = mc.player.getBlockX() + 0.5;
+        laneZ0 = mc.player.getBlockZ() + 0.5;
+        flyDescendTicks = 0;
+        flyClimbing = false;
+        flySinking = false;
+        navigator.reset();
+        flyInitialized = true;
+        return true;
     }
 
     private boolean bounceEnabled() {
@@ -508,6 +516,8 @@ public class HighwayTraveler extends Module {
         if (mc.player == null || mc.level == null) return;
         LocalPlayer p = mc.player;
 
+        if (methodSetting.get() != TravelMethod.FLY) flyInitialized = false;
+
         if (handoffTicks >= 0) {
             tickAwaitingHandoff(p);
             return;
@@ -530,6 +540,7 @@ public class HighwayTraveler extends Module {
         }
 
         if (methodSetting.get() == TravelMethod.FLY) {
+            if (!flyInitialized && !initFly()) return;
             tickFly(p);
             return;
         }
