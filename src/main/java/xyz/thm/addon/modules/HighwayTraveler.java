@@ -390,10 +390,12 @@ public class HighwayTraveler extends Module {
     // Fly mode: Elytra Route's navigator dodges obstacles, ElytraFly does the flying.
     private static final double FLY_LANE_LOOKAHEAD = 12.0;
     private static final int FLY_GOAL_DISTANCE = 100_000;
+    private static final int FLY_GOAL_STEP = 10_000;
     private static final int FLY_FLOOR_SEARCH = 8;
     private static final int FLY_MAX_DESCEND_TICKS = 200;
     private final ElytraNavigator.Config navConfig = new ElytraNavigator.Config();
-    private final ElytraNavigator navigator = new ElytraNavigator(new FlyTerrain(), navConfig);
+    private final FlyTerrain flyTerrain = new FlyTerrain();
+    private final ElytraNavigator navigator = new ElytraNavigator(flyTerrain, navConfig);
     private double laneX0, laneZ0;
     private int flyDescendTicks;
     // Hold-Y hysteresis: climb from one block below the level back up to it, sink from one block above.
@@ -964,8 +966,11 @@ public class HighwayTraveler extends Module {
         Vec3 vel = p.getDeltaMovement();
         double len = Math.hypot(fwdX, fwdZ);
         double dirX = fwdX / len, dirZ = fwdZ / len;
-        int goalX = (int) Math.round(laneX0 + dirX * FLY_GOAL_DISTANCE);
-        int goalZ = (int) Math.round(laneZ0 + dirZ * FLY_GOAL_DISTANCE);
+        // The goal moves ahead in coarse steps, so it stays FLY_GOAL_DISTANCE ahead without changing every tick.
+        double progress = Math.max(0.0, (cx - laneX0) * dirX + (cz - laneZ0) * dirZ);
+        double goalAlong = Math.floor(progress / FLY_GOAL_STEP) * FLY_GOAL_STEP + FLY_GOAL_DISTANCE;
+        int goalX = (int) Math.round(laneX0 + dirX * goalAlong);
+        int goalZ = (int) Math.round(laneZ0 + dirZ * goalAlong);
 
         ElytraNavigator.Steer steer = navigator.update(cx, cy, cz, vel.x, vel.z, goalX, goalZ, 2.0);
         if (steer.mode() == ElytraNavigator.Mode.FAILED) {
@@ -979,9 +984,13 @@ public class HighwayTraveler extends Module {
         double tx = steer.x(), tz = steer.z();
         if (steer.mode() == ElytraNavigator.Mode.DIRECT) {
             // Straight flight aims back onto the highway lane, so detours don't leave the player beside it.
+            // The navigator only checked its own target, so the lane point is used only when the way there is open.
             double along = (cx - laneX0) * dirX + (cz - laneZ0) * dirZ + FLY_LANE_LOOKAHEAD;
-            tx = laneX0 + dirX * along;
-            tz = laneZ0 + dirZ * along;
+            double lx = laneX0 + dirX * along, lz = laneZ0 + dirZ * along;
+            if (ElytraPathPlanner.lineClear(flyTerrain, cx, cy, cz, lx, cy, lz, navConfig.radius)) {
+                tx = lx;
+                tz = lz;
+            }
         }
 
         p.setYRot((float) Math.toDegrees(Math.atan2(-(tx - cx), tz - cz)));

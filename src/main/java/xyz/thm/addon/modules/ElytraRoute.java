@@ -756,6 +756,8 @@ public class ElytraRoute extends Module {
     private int repairBottleCount;
     private int repairLastDamage;
     private int repairThrowsWithoutProgress;
+    private int repairPendingTicks;
+    private static final int REPAIR_PENDING_TIMEOUT = 40;
     private boolean repairActionIssued;
 
     @EventHandler
@@ -4504,6 +4506,7 @@ public class ElytraRoute extends Module {
         repairBottleCount = 0;
         repairLastDamage = -1;
         repairThrowsWithoutProgress = 0;
+        repairPendingTicks = 0;
         repairActionIssued = false;
     }
 
@@ -4867,11 +4870,18 @@ public class ElytraRoute extends Module {
     private void mendWornElytra(ItemStack worn) {
         int missing = worn.getDamageValue() - allowedElytraDamage(worn);
         int pending = pendingRepairDurability();
-        if (missing <= pending) return;
+        if (missing <= pending) {
+            // Orbs that never reach the player would otherwise hold the repair forever.
+            if (++repairPendingTicks <= REPAIR_PENDING_TIMEOUT) return;
+            pending = 0;
+        } else {
+            repairPendingTicks = 0;
+        }
 
         if (repairLastDamage == -1 || worn.getDamageValue() < repairLastDamage) {
             repairLastDamage = worn.getDamageValue();
             repairThrowsWithoutProgress = 0;
+            repairPendingTicks = 0;
         } else if (repairThrowsWithoutProgress >= 6 && pending == 0) {
             warning("The XP is not repairing the elytra (no Mending, or another Mending item absorbed it). Stopping repair.");
             repairSuppressed = true;
