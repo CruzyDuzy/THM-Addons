@@ -171,6 +171,26 @@ public class HighwayTraveler extends Module {
             .build()
     );
 
+    private final Setting<Boolean> flyHoldY = sgGeneral.add(
+        new BoolSetting.Builder()
+            .name("fly-hold-y")
+            .description("Keeps Fly mode at a fixed Y level.")
+            .defaultValue(true)
+            .visible(() -> methodSetting.get() == TravelMethod.FLY)
+            .build()
+    );
+
+    private final Setting<Integer> flyYLevel = sgGeneral.add(
+        new IntSetting.Builder()
+            .name("fly-y-level")
+            .description("Y level Fly mode climbs back to once it drops a block below.")
+            .defaultValue(122)
+            .range(-64, 320)
+            .sliderRange(0, 256)
+            .visible(() -> methodSetting.get() == TravelMethod.FLY && flyHoldY.get())
+            .build()
+    );
+
     private final Setting<StopAtEnd> stopAtEnd = sgGeneral.add(
         new EnumSetting.Builder<StopAtEnd>()
             .name("stop-at-end")
@@ -376,6 +396,8 @@ public class HighwayTraveler extends Module {
     private final ElytraNavigator navigator = new ElytraNavigator(new FlyTerrain(), navConfig);
     private double laneX0, laneZ0;
     private int flyDescendTicks;
+    // Hold-Y hysteresis: climb from one block below the level back up to it, sink from one block above.
+    private boolean flyClimbing, flySinking;
 
     public HighwayTraveler() {
         super(THMAddon.MAIN, "highway-traveler",
@@ -403,6 +425,8 @@ public class HighwayTraveler extends Module {
         bouncePrevFov      = mc.options.fovEffectScale().get();
         prevPos     = new Vec3(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         flyDescendTicks = 0;
+        flyClimbing = false;
+        flySinking = false;
 
         if (methodSetting.get() == TravelMethod.FLY) {
             if (!isElytraFlyReady()) {
@@ -918,7 +942,7 @@ public class HighwayTraveler extends Module {
             return;
         }
 
-        navConfig.preferredY = baseFeetY + 1;
+        navConfig.preferredY = flyHoldY.get() ? flyYLevel.get() : baseFeetY + 1;
         navConfig.minY = mc.level.getMinY();
         navConfig.maxY = mc.level.getMaxY();
         navConfig.range = 64;
@@ -951,8 +975,24 @@ public class HighwayTraveler extends Module {
 
         p.setYRot((float) Math.toDegrees(Math.atan2(-(tx - cx), tz - cz)));
         pressFwd();
-        mc.options.keyJump.setDown(steer.vertical() > 0);
-        mc.options.keyShift.setDown(steer.vertical() < 0);
+        // Detours keep the navigator's own climbing; straight flight holds the configured level.
+        int vertical = flyHoldY.get() && steer.mode() == ElytraNavigator.Mode.DIRECT
+            ? holdYVertical(p.getY(), flyYLevel.get())
+            : steer.vertical();
+        mc.options.keyJump.setDown(vertical > 0);
+        mc.options.keyShift.setDown(vertical < 0);
+    }
+
+    /** +1 climb, -1 sink, 0 hold: climbs once the feet drop to one block below the level until they reach it again. */
+    private int holdYVertical(double feetY, int level) {
+        if (feetY <= level - 1) flyClimbing = true;
+        else if (feetY >= level) flyClimbing = false;
+
+        if (feetY >= level + 1) flySinking = true;
+        else if (feetY <= level + 0.2) flySinking = false;
+
+        if (flyClimbing) return 1;
+        return flySinking ? -1 : 0;
     }
 
     /** Navigator view of the world: solid, liquid or fire cells are walls; unloaded columns are unknown. */
