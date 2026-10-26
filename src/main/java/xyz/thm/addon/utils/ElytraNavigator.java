@@ -72,6 +72,7 @@ public final class ElytraNavigator {
     private int deadEnds;
     private double bestDist;
     private long bestDistTick;
+    private int lastGoalX = Integer.MIN_VALUE, lastGoalZ = Integer.MIN_VALUE;
     private final List<TimedZone> zones = new ArrayList<>();
 
     private List<Pos> path;
@@ -231,6 +232,13 @@ public final class ElytraNavigator {
 
         double gx = goalX + 0.5, gz = goalZ + 0.5;
         double dist = Math.hypot(gx - px, gz - pz);
+
+        // A new goal starts its own progress count; a goal moved further away is not a lack of progress.
+        if (goalX != lastGoalX || goalZ != lastGoalZ) {
+            lastGoalX = goalX;
+            lastGoalZ = goalZ;
+            bestDistTick = 0;
+        }
         double speed = Math.hypot(vx, vz);
         double look = Math.min(Math.max(cfg.lookahead, speed * 12.0), Math.max(dist, 1.0));
 

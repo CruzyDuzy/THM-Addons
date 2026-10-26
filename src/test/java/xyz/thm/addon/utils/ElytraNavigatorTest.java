@@ -154,6 +154,30 @@ class ElytraNavigatorTest {
     }
 
     @Test
+    void goalMovingFurtherAheadIsNotReadAsNoProgress() {
+        World w = new World();
+        w.solid = (x, y, z) -> false;
+        ElytraNavigator.Config c = new ElytraNavigator.Config();
+        c.preferredY = 100;
+        c.minY = 0;
+        c.maxY = 255;
+        c.noProgressTicks = 60;
+        ElytraNavigator nav = new ElytraNavigator(w, c);
+
+        // The goal jumps 200 blocks further every 50 ticks, faster than the player closes in on it.
+        double z = 0;
+        int goalZ = 300;
+        for (int tick = 0; tick < 400; tick++) {
+            if (tick > 0 && tick % 50 == 0) goalZ += 200;
+            w.px = 0;
+            w.pz = z;
+            ElytraNavigator.Steer s = nav.update(0, 100, z, 0, 1, 0, goalZ, 6);
+            assertTrue(s.mode() != ElytraNavigator.Mode.FAILED, "failed at tick " + tick);
+            z += 1;
+        }
+    }
+
+    @Test
     void mineableWallWithAWayAroundIsFlownAround() {
         assertTrue(!wantsToDig((x, y, z) -> z >= 30 && z <= 33 && Math.abs(x) <= 12 && y >= 90 && y <= 110));
     }

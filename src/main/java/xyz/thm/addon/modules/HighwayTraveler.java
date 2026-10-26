@@ -183,7 +183,7 @@ public class HighwayTraveler extends Module {
     private final Setting<Integer> flyYLevel = sgGeneral.add(
         new IntSetting.Builder()
             .name("fly-y-level")
-            .description("Y level Fly mode climbs back to once it drops a block below.")
+            .description("Y level Fly mode climbs back to as soon as it drops below.")
             .defaultValue(122)
             .range(-64, 320)
             .sliderRange(0, 256)
@@ -361,6 +361,8 @@ public class HighwayTraveler extends Module {
 
     private static final int OBSTACLE_WAIT_TICKS = 10;
     private static final int BOUNCE_Y_TOLERANCE = 2;
+    // How far past a gap the highway has to go on for the gap to count as damage rather than the end.
+    private static final int REPAIR_GAP_SCAN = 32;
     private static final int CHEST_SLOT_INDEX = 38;
 
     private TravelState     travelState = TravelState.FORWARD;
@@ -391,6 +393,8 @@ public class HighwayTraveler extends Module {
     private static final double FLY_LANE_LOOKAHEAD = 12.0;
     private static final int FLY_GOAL_DISTANCE = 100_000;
     private static final int FLY_GOAL_STEP = 10_000;
+    // Climbs a little past the level so slow sinking doesn't drop it straight back below.
+    private static final double HOLD_Y_OVERSHOOT = 0.25;
     private static final int FLY_FLOOR_SEARCH = 8;
     private static final int FLY_MAX_DESCEND_TICKS = 200;
     private final ElytraNavigator.Config navConfig = new ElytraNavigator.Config();
@@ -402,6 +406,21 @@ public class HighwayTraveler extends Module {
     private boolean flyClimbing, flySinking;
     // Cleared whenever another method is selected, so switching to Fly later sets up floor and lane first.
     private boolean flyInitialized;
+    // The lane sits on the highway's centre line once found; until then it is retried every second.
+    private boolean laneCentered;
+    private int laneCenterTicks;
+    private static final int LANE_SEARCH_WIDTH = 4;
+    private static final int LANE_CHECK_STEPS = 3;
+    // A railing (with a block above it) can put the feet up to two blocks above the highway.
+    private static final int LANE_DROP_SEARCH = 2;
+    private static final double LANE_CENTER_TOLERANCE = 0.3;
+    // Without a centre line found, takeoff waits this long before going ahead from where the player stands.
+    private static final int LANE_CENTER_WAIT_TICKS = 40;
+    private int laneCenterWaitTicks;
+    private static final int LANE_WALK_TICKS = 100;
+    private int laneWalkTicks;
+    private boolean flyJumped;
+    private static final double FLY_FALL_GLIDE_DISTANCE = 2.0;
 
     public HighwayTraveler() {
         super(THMAddon.MAIN, "highway-traveler",
@@ -451,12 +470,56 @@ public class HighwayTraveler extends Module {
         }
         laneX0 = mc.player.getBlockX() + 0.5;
         laneZ0 = mc.player.getBlockZ() + 0.5;
+        laneCentered = centerLaneOnHighway();
+        laneCenterTicks = 0;
+        laneCenterWaitTicks = 0;
+        laneWalkTicks = 0;
+        flyJumped = false;
         flyDescendTicks = 0;
         flyClimbing = false;
         flySinking = false;
         navigator.reset();
         flyInitialized = true;
         return true;
+    }
+
+    /**
+     * Moves the Fly lane onto the highway's centre line: the nearest sideways offset from the current lane whose
+     * cross-sections pass Highway Builder's own check (width, floor, cleared space), either just ahead or just behind,
+     * so a gap right in front still leaves the intact highway behind to centre on. Also tries up to two blocks lower,
+     * since standing on a railing puts the feet above the highway; the match sets the highway's walking height.
+     * False when none is found nearby.
+     */
+    private boolean centerLaneOnHighway() {
+        HighwayBuilderTHM builder = Modules.get().get(HighwayBuilderTHM.class);
+        if (builder == null || mc.player == null) return false;
+
+        HorizontalDirection travelDir = HorizontalDirection.get(hwYaw);
+        HorizontalDirection lateral = travelDir.rotateLeftSkipOne();
+        BlockPos base = lanePointAtPlayer();
+        // Offsets 0, -1, 1, -2, 2, ...: the closest centre line wins.
+        for (int i = 0; i <= LANE_SEARCH_WIDTH * 2; i++) {
+            int off = (i + 1) / 2 * (i % 2 == 1 ? -1 : 1);
+            for (int dy = 0; dy >= -LANE_DROP_SEARCH; dy--) {
+                BlockPos candidate = base.offset(lateral.offsetX * off, dy, lateral.offsetZ * off);
+                if (builder.sectionsHealthy(travelDir, candidate, 1, LANE_CHECK_STEPS)
+                    || builder.sectionsHealthy(travelDir, candidate, -LANE_CHECK_STEPS, -1)) {
+                    laneX0 = candidate.getX() + 0.5;
+                    laneZ0 = candidate.getZ() + 0.5;
+                    baseFeetY = candidate.getY();
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The lane point level with the player, at the highway's walking height. */
+    private BlockPos lanePointAtPlayer() {
+        double len = Math.hypot(fwdX, fwdZ);
+        double dirX = fwdX / len, dirZ = fwdZ / len;
+        double along = (mc.player.getX() - laneX0) * dirX + (mc.player.getZ() - laneZ0) * dirZ;
+        return BlockPos.containing(laneX0 + dirX * along, baseFeetY, laneZ0 + dirZ * along);
     }
 
     private boolean bounceEnabled() {
@@ -525,10 +588,15 @@ public class HighwayTraveler extends Module {
             return;
         }
 
+        // Before the end scan, so the repair check can tell a gap from the end right after switching to Fly.
+        if (methodSetting.get() == TravelMethod.FLY && !flyInitialized && !initFly()) return;
+
         if (stopAtEnd.get() != StopAtEnd.OFF && travelState != TravelState.BACKUP) {
             BlockPos end = findHighwayEnd(p);
             if (end != null) {
-                reachEnd(p, end);
+                // A hole with highway behind it is damage for the builder, not the end.
+                if (autoRepairSwap.get() && highwayAheadBroken()) beginHandoffWait(p);
+                else reachEnd(p, end);
                 return;
             }
         }
@@ -542,7 +610,6 @@ public class HighwayTraveler extends Module {
         }
 
         if (methodSetting.get() == TravelMethod.FLY) {
-            if (!flyInitialized && !initFly()) return;
             tickFly(p);
             return;
         }
@@ -828,13 +895,35 @@ public class HighwayTraveler extends Module {
         }
     }
 
+    /**
+     * True when the highway ahead needs a repair. Fly mode measures from the lane centre at the highway's walking
+     * height, since it flies above and slightly beside it. With stop-at-end on, a gap only counts when the highway
+     * goes on behind it; otherwise it is the end of the pave or dig, which stop-at-end handles.
+     */
     private boolean highwayAheadBroken() {
         HighwayBuilderTHM builder = Modules.get().get(HighwayBuilderTHM.class);
-        if (builder == null) return false;
+        if (builder == null || mc.player == null) return false;
 
         HorizontalDirection travelDir = HorizontalDirection.get(hwYaw);
-        int tolerance = repairToleratesBounce.get() ? BOUNCE_Y_TOLERANCE : 0;
-        return !builder.isHighwayAheadClean(travelDir, repairScanBlocks.get(), tolerance);
+        boolean fly = methodSetting.get() == TravelMethod.FLY;
+        if (fly && !flyInitialized) return false;
+
+        BlockPos origin;
+        int tolerance;
+        if (fly) {
+            // Off the centre line the cross-sections are shifted and the check is meaningless.
+            if (!laneCentered) return false;
+            origin = lanePointAtPlayer();
+            tolerance = 0;
+        } else {
+            origin = new BlockPos(mc.player.getBlockX(), (int) Math.round(mc.player.getY()), mc.player.getBlockZ());
+            tolerance = repairToleratesBounce.get() ? BOUNCE_Y_TOLERANCE : 0;
+        }
+
+        int broken = builder.firstBrokenStepAhead(travelDir, origin, repairScanBlocks.get(), tolerance);
+        if (broken == -1) return false;
+        if (stopAtEnd.get() == StopAtEnd.OFF) return true;
+        return builder.highwayContinuesAhead(travelDir, origin, broken + 1, broken + REPAIR_GAP_SCAN, tolerance);
     }
 
     /**
@@ -877,7 +966,7 @@ public class HighwayTraveler extends Module {
         // travelHandoffDeactivateArmed), so it should always be inactive here. Reactivating it
         // resumes its stats session from the cached snapshot rather than starting fresh.
         HighwayBuilderTHM builder = Modules.get().get(HighwayBuilderTHM.class);
-        if (builder != null && !builder.isActive()) builder.toggle();
+        if (builder != null) builder.startRepairForTraveler(stopAtEnd.get() != StopAtEnd.OFF);
     }
 
     /**
@@ -893,6 +982,13 @@ public class HighwayTraveler extends Module {
         Vec3 vel = p.getDeltaMovement();
         int scan = Math.min(END_MAX_SCAN, 2 + (int) Math.ceil(Math.hypot(vel.x, vel.z) * 4));
         int x = p.getBlockX(), z = p.getBlockZ();
+        if (methodSetting.get() == TravelMethod.FLY) {
+            // Fly mode judges the centre line: under a railing there is no pave, which read as the end on takeoff.
+            if (!laneCentered) return null;
+            BlockPos lane = lanePointAtPlayer();
+            x = lane.getX();
+            z = lane.getZ();
+        }
 
         for (int step = 1; step <= scan; step++) {
             int cx = x + fwdX * step, cz = z + fwdZ * step;
@@ -937,6 +1033,11 @@ public class HighwayTraveler extends Module {
     private void tickFly(LocalPlayer p) {
         p.setXRot(0);
 
+        if (!laneCentered && ++laneCenterTicks >= 20) {
+            laneCenterTicks = 0;
+            laneCentered = centerLaneOnHighway();
+        }
+
         if (!p.isFallFlying()) {
             releaseAll();
             mc.options.keyShift.setDown(false);
@@ -947,8 +1048,13 @@ public class HighwayTraveler extends Module {
                 return;
             }
             if (p.onGround()) {
+                // Like Highway Builder, walk onto the centre line first, then take off from there.
+                flyJumped = false;
+                if (walkToLaneCenter(p)) return;
                 p.jumpFromGround();
-            } else if (p.getDeltaMovement().y < 0) {
+                flyJumped = true;
+            } else if ((flyJumped || p.fallDistance > FLY_FALL_GLIDE_DISTANCE) && p.getDeltaMovement().y < 0) {
+                // Not on stepping down from a railing on the way to the centre, only after the takeoff jump or a real fall.
                 mc.getConnection().send(new ServerboundPlayerCommandPacket(p, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
                 p.startFallFlying();
             }
@@ -1003,13 +1109,36 @@ public class HighwayTraveler extends Module {
         mc.options.keyShift.setDown(vertical < 0);
     }
 
-    /** +1 climb, -1 sink, 0 hold: climbs once the feet drop to one block below the level until they reach it again. */
+    /**
+     * Walks sideways onto the lane's centre line, stepping off a railing if needed. True while still walking; false
+     * once centred, when no centre line has been found within {@link #LANE_CENTER_WAIT_TICKS}, or when the walk takes
+     * longer than {@link #LANE_WALK_TICKS} (e.g. blocked by the railing from outside), so takeoff goes on.
+     */
+    private boolean walkToLaneCenter(LocalPlayer p) {
+        if (!laneCentered) return ++laneCenterWaitTicks < LANE_CENTER_WAIT_TICKS;
+        if (++laneWalkTicks >= LANE_WALK_TICKS) {
+            releaseAll();
+            return false;
+        }
+
+        BlockPos lane = lanePointAtPlayer();
+        double dx = lane.getX() + 0.5 - p.getX(), dz = lane.getZ() + 0.5 - p.getZ();
+        if (dx * dx + dz * dz <= LANE_CENTER_TOLERANCE * LANE_CENTER_TOLERANCE) {
+            releaseAll();
+            return false;
+        }
+        p.setYRot((float) Math.toDegrees(Math.atan2(-dx, dz)));
+        pressFwd();
+        return true;
+    }
+
+    /** +1 climb, -1 sink, 0 hold: climbs as soon as the feet are below the level (block Y 121 for 122) until slightly above it. */
     private int holdYVertical(double feetY, int level) {
-        if (feetY <= level - 1) flyClimbing = true;
-        else if (feetY >= level) flyClimbing = false;
+        if (feetY < level) flyClimbing = true;
+        else if (feetY >= level + HOLD_Y_OVERSHOOT) flyClimbing = false;
 
         if (feetY >= level + 1) flySinking = true;
-        else if (feetY <= level + 0.2) flySinking = false;
+        else if (feetY <= level + HOLD_Y_OVERSHOOT) flySinking = false;
 
         if (flyClimbing) return 1;
         return flySinking ? -1 : 0;
