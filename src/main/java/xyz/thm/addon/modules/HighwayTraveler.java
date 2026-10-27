@@ -199,6 +199,17 @@ public class HighwayTraveler extends Module {
             .build()
     );
 
+    private final Setting<Integer> endRows = sgGeneral.add(
+        new IntSetting.Builder()
+            .name("end-rows")
+            .description("Unpaved rows in a row that count as the end of the pave.")
+            .defaultValue(3)
+            .range(2, 10)
+            .sliderRange(2, 8)
+            .visible(() -> stopAtEnd.get() == StopAtEnd.PAVE)
+            .build()
+    );
+
     private final Setting<Boolean> sprintSetting = sgGeneral.add(
         new BoolSetting.Builder()
             .name("sprint")
@@ -806,6 +817,19 @@ public class HighwayTraveler extends Module {
     }
 
     private void tickForward(LocalPlayer p) {
+        // The end check tolerates short gaps and holes beside pave, so walking on would drop into them.
+        if (stopAtEnd.get() == StopAtEnd.PAVE && laneFloorMissingAhead(p)) {
+            if (autoRepairSwap.get() && highwayAheadBroken()) {
+                beginHandoffWait(p);
+                return;
+            }
+            warning("No pave ahead in the lane. Stopping.");
+            handoffToBuilder = false;
+            beginHandoffWait(p);
+            handoffTicks = 0;
+            return;
+        }
+
         switch (detectObstacle(p)) {
             case CLEAR    -> pressFwd();
             case JUMPABLE -> {
@@ -971,7 +995,7 @@ public class HighwayTraveler extends Module {
 
     /**
      * First block ahead where the chosen highway part ends, or null. Pave: the floor under the walking height stops
-     * being obsidian for two blocks in a row. Dug: feet and head height are walled off across the whole lane, so a
+     * being obsidian for {@code end-rows} rows in a row. Dug: feet and head height are walled off across the whole lane, so a
      * lone block in the way is still routed around. Looks further ahead the faster the player moves.
      */
     private BlockPos findHighwayEnd(LocalPlayer p) {
@@ -995,15 +1019,41 @@ public class HighwayTraveler extends Module {
             if (!mc.level.hasChunk(cx >> 4, cz >> 4)) return null;
 
             if (stopAtEnd.get() == StopAtEnd.PAVE) {
-                int nx = cx + fwdX, nz = cz + fwdZ;
-                if (!isPaveFloor(cx, cz) && mc.level.hasChunk(nx >> 4, nz >> 4) && !isPaveFloor(nx, nz)) {
-                    return new BlockPos(cx, baseFeetY, cz);
-                }
+                if (paveEndsAt(cx, cz)) return new BlockPos(cx, baseFeetY, cz);
             } else if (isDugWall(cx, cz)) {
                 return new BlockPos(cx, baseFeetY, cz);
             }
         }
         return null;
+    }
+
+    /** True when {@code end-rows} rows from here on, all loaded, have no pave in the centre lane or the lanes beside it. */
+    private boolean paveEndsAt(int x, int z) {
+        for (int i = 0; i < endRows.get(); i++) {
+            int rx = x + fwdX * i, rz = z + fwdZ * i;
+            if (!mc.level.hasChunk(rx >> 4, rz >> 4) || rowHasPave(rx, rz)) return false;
+        }
+        return true;
+    }
+
+    /** A hole in one lane is damage, not the end: a row only counts as unpaved with no pave across the middle three lanes. */
+    private boolean rowHasPave(int x, int z) {
+        int sideX = -fwdZ, sideZ = fwdX;
+        for (int lane = -1; lane <= 1; lane++) {
+            if (isPaveFloor(x + sideX * lane, z + sideZ * lane)) return true;
+        }
+        return false;
+    }
+
+    /** Two blocks: releasing forward still slides the player about a third of a block. */
+    private boolean laneFloorMissingAhead(LocalPlayer p) {
+        // Off the walking height (railing, jump) the floor below is not the lane's.
+        if (baseFeetY == Integer.MIN_VALUE || p.getBlockY() != baseFeetY) return false;
+        for (int step = 1; step <= 2; step++) {
+            int x = p.getBlockX() + fwdX * step, z = p.getBlockZ() + fwdZ * step;
+            if (mc.level.hasChunk(x >> 4, z >> 4) && !isPaveFloor(x, z)) return true;
+        }
+        return false;
     }
 
     private boolean isPaveFloor(int x, int z) {
