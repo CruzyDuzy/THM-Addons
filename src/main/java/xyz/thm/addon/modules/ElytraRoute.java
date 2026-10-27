@@ -23,8 +23,6 @@ import meteordevelopment.meteorclient.systems.modules.player.AutoGap;
 import meteordevelopment.meteorclient.systems.modules.player.Rotation;
 import meteordevelopment.meteorclient.systems.modules.render.FreeLook;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
-import meteordevelopment.meteorclient.utils.Utils;
-import meteordevelopment.meteorclient.utils.player.FindItemResult;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.player.Rotations;
 import meteordevelopment.meteorclient.utils.player.SlotUtils;
@@ -48,18 +46,14 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownExperienceBottle;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemContainerContents;
-import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.block.state.BlockState;
@@ -104,7 +98,6 @@ public class ElytraRoute extends Module {
 
     private final SettingGroup sgRoute = settings.getDefaultGroup();
     private final SettingGroup sgPath = settings.createGroup("Pathing");
-    private final SettingGroup sgRepair = settings.createGroup("Repair");
     private final SettingGroup sgRestock = settings.createGroup("Restock");
     private final SettingGroup sgFood = settings.createGroup("Food");
     private final SettingGroup sgHome = settings.createGroup("Home");
@@ -249,59 +242,6 @@ public class ElytraRoute extends Module {
         .description("Line from the screen centre to the next path point.")
         .defaultValue(true)
         .visible(() -> smartPathing.get() && renderPath.get())
-        .build()
-    );
-
-    private final Setting<Boolean> repairElytras = sgRepair.add(new BoolSetting.Builder()
-        .name("repair-elytras")
-        .description("Mend nearly broken elytras with XP bottles.")
-        .defaultValue(false)
-        .build()
-    );
-
-    private final Setting<Integer> repairBelow = sgRepair.add(new IntSetting.Builder()
-        .name("repair-below")
-        .description("Repair once every elytra has at most this much durability left.")
-        .defaultValue(40)
-        .range(1, 400)
-        .sliderRange(1, 200)
-        .visible(repairElytras::get)
-        .build()
-    );
-
-    private final Setting<Integer> repairTarget = sgRepair.add(new IntSetting.Builder()
-        .name("repair-target")
-        .description("Mend elytras up to this durability percent.")
-        .defaultValue(100)
-        .range(10, 100)
-        .sliderRange(10, 100)
-        .visible(repairElytras::get)
-        .build()
-    );
-
-    private final Setting<Boolean> enderChestXp = sgRepair.add(new BoolSetting.Builder()
-        .name("ender-chest-xp")
-        .description("Fetch an XP shulker from your Ender Chest when you have no bottles.")
-        .defaultValue(true)
-        .visible(repairElytras::get)
-        .build()
-    );
-
-    private final Setting<Boolean> returnShulker = sgRepair.add(new BoolSetting.Builder()
-        .name("return-shulker")
-        .description("Put the XP shulker back into the Ender Chest afterwards.")
-        .defaultValue(true)
-        .visible(() -> repairElytras.get() && enderChestXp.get())
-        .build()
-    );
-
-    private final Setting<Integer> repairThrowDelay = sgRepair.add(new IntSetting.Builder()
-        .name("throw-delay")
-        .description("Ticks between thrown XP bottles.")
-        .defaultValue(2)
-        .range(1, 10)
-        .sliderRange(1, 10)
-        .visible(repairElytras::get)
         .build()
     );
 
@@ -554,7 +494,6 @@ public class ElytraRoute extends Module {
         RESTOCK_CLOSE,
         RESTOCK_BREAK,
         RESTOCK_PICKUP,
-        REPAIR,
         ARRIVED_WAIT,
         OUT_OF_ELYTRAS_WAIT,
         MINER
@@ -564,7 +503,6 @@ public class ElytraRoute extends Module {
         RESTOCK,
         ARRIVAL,
         OUT_OF_ELYTRAS,
-        REPAIR,
         BLOCKED,
         MINER
     }
@@ -581,12 +519,6 @@ public class ElytraRoute extends Module {
         MOVE_SOURCE,
         VERIFY_SOURCE,
         PLACE
-    }
-
-    private enum RepairStep {
-        PLAN, MOVE, CHEST_PLACE, CHEST_OPEN, CHEST_TAKE, CHEST_CLOSE,
-        SHULKER_PLACE, SHULKER_OPEN, SHULKER_TAKE, SHULKER_CLOSE, SHULKER_BREAK, SHULKER_PICKUP,
-        MEND, RETURN_OPEN, RETURN_PUT, RETURN_CLOSE, CHEST_BREAK, CHEST_PICKUP, CLEANUP, DONE
     }
 
     private enum ResumeState {
@@ -742,23 +674,6 @@ public class ElytraRoute extends Module {
     private static final int TAKEOFF_CLEAR_TIMEOUT = 200;
     private static final double FALLBACK_GOAL_REACHED = 3.0;
     private static final int TAKEOFF_HEADROOM = 4;
-
-    private RepairStep repairStep = RepairStep.PLAN;
-    private boolean repairSuppressed;
-    private boolean repairFailed;
-    private boolean repairChestPlaced;
-    private BlockPos repairChestPos;
-    private BlockPos repairShulkerPos;
-    private String repairShulkerKey;
-    private int repairTicks;
-    private int repairShulkerCount;
-    private int repairChestCount;
-    private int repairBottleCount;
-    private int repairLastDamage;
-    private int repairThrowsWithoutProgress;
-    private int repairPendingTicks;
-    private static final int REPAIR_PENDING_TIMEOUT = 40;
-    private boolean repairActionIssued;
 
     @EventHandler
     private void onRender(Render3DEvent event) {
@@ -935,7 +850,6 @@ public class ElytraRoute extends Module {
             case RESTOCK_CLOSE -> tickRestockClose();
             case RESTOCK_BREAK -> tickRestockBreak();
             case RESTOCK_PICKUP -> tickRestockPickup();
-            case REPAIR -> tickRepair();
             case ARRIVED_WAIT -> tickArrivedWait();
             case OUT_OF_ELYTRAS_WAIT -> tickOutOfElytrasWait();
             case MINER -> tickMinerFallback();
@@ -1054,11 +968,6 @@ public class ElytraRoute extends Module {
             return;
         }
 
-        if (needsRepair()) {
-            beginRepair(mc.player.isFallFlying());
-            return;
-        }
-
         if (countTotalFlightReadyElytras() <= 0) {
             if (restockElytras.get()) startRestockInterrupt(RestockKind.ELYTRA, ResumeState.ROUTE_FLIGHT);
             else beginLanding(LandingReason.OUT_OF_ELYTRAS);
@@ -1160,11 +1069,6 @@ public class ElytraRoute extends Module {
     private void resumeRouteAfterReconnect(String source) {
         if (mc.player == null || mc.level == null) return;
 
-        if (state == State.REPAIR) {
-            warning("Repair was interrupted by the reconnect; any blocks placed for it were left where they are.");
-            resetRepairRuntime();
-        }
-
         // Restores Baritone's settings and drops its old goal; the next fallback starts fresh.
         if (minerStarted || baritoneSettingsSaved) stopBaritoneFallback();
         minerStarted = false;
@@ -1211,7 +1115,7 @@ public class ElytraRoute extends Module {
     }
 
     private void closeHandledRestockScreenIfOpen() {
-        if (!isRestockState(state) && state != State.REPAIR) return;
+        if (!isRestockState(state)) return;
         if (mc.gui.screen() instanceof AbstractContainerScreen<?>) mc.gui.screen().onClose();
     }
 
@@ -1431,7 +1335,6 @@ public class ElytraRoute extends Module {
         restockOpenedSourceValidated = false;
         clearInvalidSourceTracking();
         clearDeferredRestockFailure();
-        resetRepairRuntime();
     }
 
     private void resetRuntime() {
@@ -1470,8 +1373,6 @@ public class ElytraRoute extends Module {
         lastLandingChunkWarningAtMs = 0L;
         clearReconnectRuntime(true);
         clearDeferredRestockFailure();
-        repairSuppressed = false;
-        resetRepairRuntime();
         navigator.reset();
         navSteer = null;
         finalHomeSaveSent = false;
@@ -1834,11 +1735,6 @@ public class ElytraRoute extends Module {
             return true;
         }
 
-        if (needsRepair()) {
-            beginRepair(true);
-            return true;
-        }
-
         if (needsElytraRestock()) {
             if (!restockElytras.get()) {
                 beginLanding(LandingReason.OUT_OF_ELYTRAS);
@@ -1883,7 +1779,6 @@ public class ElytraRoute extends Module {
             case ARRIVAL -> state = State.ARRIVED_WAIT;
             case OUT_OF_ELYTRAS -> state = State.OUT_OF_ELYTRAS_WAIT;
             case RESTOCK -> state = State.RESTOCK_MOVE_TO_PAD;
-            case REPAIR -> state = State.REPAIR;
             case MINER -> {
                 if (minerStarted || baritoneSettingsSaved) stopBaritoneFallback();
                 minerStarted = false;
@@ -2752,11 +2647,6 @@ public class ElytraRoute extends Module {
 
         if (needsFoodRestock()) {
             startRestockInterrupt(RestockKind.FOOD, ResumeState.ROUTE_FLIGHT);
-            return true;
-        }
-
-        if (needsRepair()) {
-            beginRepair(false);
             return true;
         }
 
@@ -4425,797 +4315,7 @@ public class ElytraRoute extends Module {
         return true;
     }
 
-    // ---- Elytra repair: mend nearly broken elytras with XP bottles, optionally fetched from an Ender Chest ----
-
-    private boolean needsRepair() {
-        if (!repairElytras.get() || repairSuppressed || mc.player == null) return false;
-
-        boolean anyElytra = false;
-        ItemStack worn = mc.player.getItemBySlot(EquipmentSlot.CHEST);
-        if (worn.is(Items.ELYTRA)) {
-            anyElytra = true;
-            if (elytraRemaining(worn) > repairBelow.get()) return false;
-        }
-
-        for (int i = 0; i < PLAYER_INVENTORY_SLOTS; i++) {
-            ItemStack stack = mc.player.getInventory().getItem(i);
-            if (!stack.is(Items.ELYTRA)) continue;
-            anyElytra = true;
-            if (elytraRemaining(stack) > repairBelow.get()) return false;
-        }
-
-        return anyElytra && hasRepairSupplies();
-    }
-
-    private boolean hasRepairSupplies() {
-        if (countXpBottles() > 0) return true;
-        if (findInventoryXpShulker() != -1) return true;
-        if (!enderChestXp.get()) return false;
-        return InvUtils.find(Items.ENDER_CHEST).found() || (mc.player.onGround() && findNearbyEnderChest() != null);
-    }
-
     private int elytraRemaining(ItemStack stack) {
         return stack.getMaxDamage() - stack.getDamageValue();
-    }
-
-    private int allowedElytraDamage(ItemStack stack) {
-        return (int) Math.floor(stack.getMaxDamage() * (1.0 - repairTarget.get() / 100.0));
-    }
-
-    private boolean elytraNeedsMend(ItemStack stack) {
-        return stack != null && stack.is(Items.ELYTRA) && stack.getDamageValue() > allowedElytraDamage(stack);
-    }
-
-    private int countXpBottles() {
-        return InvUtils.find(Items.EXPERIENCE_BOTTLE).count();
-    }
-
-    private int totalMissingElytraDurability() {
-        int missing = 0;
-        ItemStack worn = mc.player.getItemBySlot(EquipmentSlot.CHEST);
-        if (elytraNeedsMend(worn)) missing += worn.getDamageValue() - allowedElytraDamage(worn);
-        for (int i = 0; i < PLAYER_INVENTORY_SLOTS; i++) {
-            ItemStack stack = mc.player.getInventory().getItem(i);
-            if (elytraNeedsMend(stack)) missing += stack.getDamageValue() - allowedElytraDamage(stack);
-        }
-        return missing;
-    }
-
-    private void beginRepair(boolean fromFlight) {
-        resetRepairRuntime();
-        repairStep = RepairStep.PLAN;
-        if (fromFlight) {
-            beginLanding(LandingReason.REPAIR);
-        } else {
-            releaseMovement();
-            state = State.REPAIR;
-            stateTicks = 0;
-        }
-    }
-
-    private void resetRepairRuntime() {
-        repairStep = RepairStep.PLAN;
-        repairFailed = false;
-        repairChestPlaced = false;
-        repairChestPos = null;
-        repairShulkerPos = null;
-        repairShulkerKey = null;
-        repairTicks = 0;
-        repairShulkerCount = 0;
-        repairChestCount = 0;
-        repairBottleCount = 0;
-        repairLastDamage = -1;
-        repairThrowsWithoutProgress = 0;
-        repairPendingTicks = 0;
-        repairActionIssued = false;
-    }
-
-    private void setRepairStep(RepairStep step) {
-        repairStep = step;
-        repairTicks = 0;
-        repairActionIssued = false;
-    }
-
-    private void abortRepair(String message) {
-        warning(message);
-        repairFailed = true;
-        repairSuppressed = true;
-        setRepairStep(RepairStep.CLEANUP);
-    }
-
-    private void tickRepair() {
-        if (mc.player == null || mc.level == null) return;
-        if (actionDelayTicks > 0) return;
-
-        switch (repairStep) {
-            case PLAN -> repairPlan();
-            case MOVE -> repairMove();
-            case CHEST_PLACE -> repairPlaceChest();
-            case CHEST_OPEN -> openRepairContainer(repairChestPos, "Ender Chest", RepairStep.CHEST_TAKE);
-            case CHEST_TAKE -> repairTakeFromChest();
-            case CHEST_CLOSE -> closeRepairScreen(repairShulkerKey != null ? RepairStep.SHULKER_PLACE : RepairStep.MEND);
-            case SHULKER_PLACE -> repairPlaceShulker();
-            case SHULKER_OPEN -> openRepairContainer(repairShulkerPos, "XP shulker", RepairStep.SHULKER_TAKE);
-            case SHULKER_TAKE -> repairTakeBottles();
-            case SHULKER_CLOSE -> closeRepairScreen(RepairStep.SHULKER_BREAK);
-            case SHULKER_BREAK -> repairBreakShulker();
-            case SHULKER_PICKUP -> repairPickupShulker();
-            case MEND -> repairMend();
-            case RETURN_OPEN -> openRepairContainer(repairChestPos, "Ender Chest", RepairStep.RETURN_PUT);
-            case RETURN_PUT -> repairReturnShulker();
-            case RETURN_CLOSE -> closeRepairScreen(repairChestPlaced ? RepairStep.CHEST_BREAK : RepairStep.DONE);
-            case CHEST_BREAK -> repairBreakChest();
-            case CHEST_PICKUP -> repairPickupChest();
-            case CLEANUP -> repairCleanup();
-            case DONE -> finishRepair();
-        }
-    }
-
-    private void repairPlan() {
-        releaseMovement();
-
-        if (countXpBottles() > 0) {
-            setRepairStep(RepairStep.MEND);
-            return;
-        }
-
-        int shulkerSlot = findInventoryXpShulker();
-        if (shulkerSlot != -1) {
-            repairShulkerKey = nonXpKey(mc.player.getInventory().getItem(shulkerSlot));
-            setRepairStep(RepairStep.SHULKER_PLACE);
-            return;
-        }
-
-        if (!enderChestXp.get()) {
-            abortRepair("No XP bottles to repair with.");
-            return;
-        }
-
-        BlockPos nearby = findNearbyEnderChest();
-        if (nearby != null) {
-            repairChestPos = nearby;
-            repairChestPlaced = false;
-            setRepairStep(RepairStep.CHEST_OPEN);
-            return;
-        }
-
-        if (!InvUtils.find(Items.ENDER_CHEST).found()) {
-            abortRepair("No XP bottles and no Ender Chest to fetch them from.");
-            return;
-        }
-
-        restockPad = null;
-        resetRestockPadSearch();
-        setRepairStep(RepairStep.MOVE);
-    }
-
-    private void repairMove() {
-        if (++repairTicks > 300) {
-            abortRepair("Could not find a spot to place the Ender Chest.");
-            return;
-        }
-
-        if (restockPad == null) {
-            restockPad = findNextRestockPad();
-            if (restockPad == null) return;
-        }
-
-        moveToward(restockPad.playerBase.getX() + 0.5, restockPad.playerBase.getZ() + 0.5, () -> {
-            releaseMovement();
-            setRepairStep(RepairStep.CHEST_PLACE);
-        });
-    }
-
-    private void repairPlaceChest() {
-        if (countEmptyLooseSlots() < 1) {
-            abortRepair("Inventory is full.");
-            return;
-        }
-
-        int slot = prepareRepairHotbarItem(Items.ENDER_CHEST);
-        if (slot == -1) {
-            if (++repairTicks > 20) abortRepair("Could not move the Ender Chest to the hotbar.");
-            return;
-        }
-
-        BlockPos pos = restockPad.containerBase.above();
-        repairChestCount = InvUtils.find(Items.ENDER_CHEST).count();
-        if (!BlockUtils.place(pos, InteractionHand.MAIN_HAND, slot, false, 0, true, true, true)) {
-            abortRepair("Failed to place the Ender Chest.");
-            return;
-        }
-
-        repairChestPos = pos.immutable();
-        repairChestPlaced = true;
-        actionDelayTicks = inventoryDelay.get();
-        setRepairStep(RepairStep.CHEST_OPEN);
-    }
-
-    /** Right-clicks the block until its screen opens; moves on to {@code next} once it has. */
-    private void openRepairContainer(BlockPos pos, String label, RepairStep next) {
-        if (pos == null) {
-            abortRepair("Lost track of the " + label + ".");
-            return;
-        }
-
-        if (mc.gui.screen() != null && mc.player.containerMenu != null
-            && mc.player.containerMenu.slots.size() > PLAYER_INVENTORY_SLOTS) {
-            actionDelayTicks = inventoryDelay.get();
-            setRepairStep(next);
-            return;
-        }
-
-        repairTicks++;
-        if (mc.level.getBlockState(pos).isAir()) {
-            if (repairTicks > 40) abortRepair("The " + label + " is gone.");
-            return;
-        }
-
-        if (repairTicks % 20 == 1) {
-            mc.gameMode.useItemOn(
-                mc.player,
-                InteractionHand.MAIN_HAND,
-                new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(pos), net.minecraft.core.Direction.UP, pos, false)
-            );
-        } else if (repairTicks > 80) {
-            abortRepair("The " + label + " did not open.");
-        }
-    }
-
-    private void closeRepairScreen(RepairStep next) {
-        if (mc.player.containerMenu != null && !mc.player.containerMenu.getCarried().isEmpty()) {
-            clearCursorAfterSwap();
-            actionDelayTicks = inventoryDelay.get();
-            return;
-        }
-
-        if (mc.gui.screen() != null) {
-            mc.gui.screen().onClose();
-            actionDelayTicks = inventoryDelay.get();
-            return;
-        }
-
-        setRepairStep(next);
-    }
-
-    private void repairTakeFromChest() {
-        if (mc.gui.screen() == null || mc.player.containerMenu == null) {
-            setRepairStep(RepairStep.CHEST_OPEN);
-            return;
-        }
-
-        if (repairActionIssued) {
-            boolean arrived = repairShulkerKey != null
-                ? countInventoryShulkerBoxes() > repairShulkerCount
-                : countXpBottles() > repairBottleCount;
-            if (arrived) {
-                setRepairStep(RepairStep.CHEST_CLOSE);
-            } else if (++repairTicks > 20) {
-                abortRepair("Could not take the XP supplies out of the Ender Chest.");
-            }
-            return;
-        }
-
-        if (countEmptyLooseSlots() < 2) {
-            abortRepair("Not enough free inventory slots to take the XP supplies.");
-            return;
-        }
-
-        int loose = findContainerSlot(stack -> stack.is(Items.EXPERIENCE_BOTTLE));
-        if (loose != -1) {
-            repairShulkerKey = null;
-            repairBottleCount = countXpBottles();
-            InvUtils.shiftClick().slotId(loose);
-        } else {
-            int shulker = findContainerSlot(stack -> isShulkerBox(stack) && countXpBottlesInShulker(stack) > 0);
-            if (shulker == -1) {
-                abortRepair("No XP bottles or XP shulker were found in your Ender Chest.");
-                return;
-            }
-
-            repairShulkerKey = nonXpKey(mc.player.containerMenu.slots.get(shulker).getItem());
-            repairShulkerCount = countInventoryShulkerBoxes();
-            InvUtils.shiftClick().slotId(shulker);
-        }
-
-        repairActionIssued = true;
-        repairTicks = 0;
-        actionDelayTicks = inventoryDelay.get();
-    }
-
-    private void repairPlaceShulker() {
-        int slot = findShulkerByKey(repairShulkerKey, true);
-        if (slot == -1) {
-            abortRepair("The XP shulker went missing from your inventory.");
-            return;
-        }
-
-        if (!SlotUtils.isHotbar(slot)) {
-            if (++repairTicks > 20) {
-                abortRepair("Could not move the XP shulker to the hotbar.");
-                return;
-            }
-
-            InvUtils.move().from(slot).toHotbar(findRepairHotbarSlot());
-            if (!clearCursorStackToEmptySlot()) {
-                abortRepair("Unable to clear the cursor after moving the XP shulker.");
-                return;
-            }
-            actionDelayTicks = Math.max(1, inventoryDelay.get());
-            return;
-        }
-
-        BlockPos pos = findShulkerPlacePos();
-        if (pos == null) {
-            abortRepair("No free spot next to you to set the XP shulker down.");
-            return;
-        }
-
-        repairShulkerCount = countInventoryShulkerBoxes();
-        if (!BlockUtils.place(pos, InteractionHand.MAIN_HAND, slot, false, 0, true, true, true)) {
-            abortRepair("Failed to place the XP shulker.");
-            return;
-        }
-
-        repairShulkerPos = pos.immutable();
-        actionDelayTicks = inventoryDelay.get();
-        setRepairStep(RepairStep.SHULKER_OPEN);
-    }
-
-    private void repairTakeBottles() {
-        if (mc.gui.screen() == null || mc.player.containerMenu == null) {
-            setRepairStep(RepairStep.SHULKER_OPEN);
-            return;
-        }
-
-        int wanted = Math.max(8, (int) Math.ceil(totalMissingElytraDurability() / 10.0) + 4);
-        int slot = findContainerSlot(stack -> stack.is(Items.EXPERIENCE_BOTTLE));
-        boolean room = countEmptyLooseSlots() >= 2;
-
-        if (slot == -1 || countXpBottles() >= wanted || !room) {
-            if (countXpBottles() <= 0) {
-                abortRepair(slot == -1 ? "The XP shulker is empty." : "Not enough free inventory slots to take XP bottles.");
-                return;
-            }
-
-            setRepairStep(RepairStep.SHULKER_CLOSE);
-            return;
-        }
-
-        InvUtils.shiftClick().slotId(slot);
-        actionDelayTicks = inventoryDelay.get();
-    }
-
-    private void repairBreakShulker() {
-        if (mc.gui.screen() != null) {
-            mc.gui.screen().onClose();
-            return;
-        }
-
-        if (repairShulkerPos != null && mc.level.getBlockState(repairShulkerPos).getBlock() instanceof ShulkerBoxBlock) {
-            if (++repairTicks > 400) {
-                warning("The XP shulker could not be broken.");
-                setRepairStep(RepairStep.DONE);
-                return;
-            }
-
-            BlockUtils.breakBlock(repairShulkerPos, true);
-            return;
-        }
-
-        setRepairStep(RepairStep.SHULKER_PICKUP);
-    }
-
-    private void repairPickupShulker() {
-        if (countInventoryShulkerBoxes() >= repairShulkerCount) {
-            releaseMovement();
-            repairShulkerPos = null;
-            setRepairStep(repairFailed ? RepairStep.CLEANUP : RepairStep.MEND);
-            return;
-        }
-
-        if (++repairTicks > SHULKER_PICKUP_TIMEOUT * 2) {
-            releaseMovement();
-            warning("The XP shulker was not picked up in time; it is lying on the ground nearby.");
-            repairShulkerPos = null;
-            repairShulkerKey = null;
-            setRepairStep(repairFailed ? RepairStep.CLEANUP : RepairStep.MEND);
-            return;
-        }
-
-        if (countEmptyLooseSlots() <= 0 && repairTicks % SHULKER_PICKUP_REACQUIRE_INTERVAL == 0) {
-            dropReplaceableLooseElytraForPickup();
-        }
-
-        ItemEntity nearest = collectShulkerDrops().stream()
-            .min(Comparator.comparingDouble(entity -> mc.player.distanceToSqr(entity.getX(), entity.getY(), entity.getZ())))
-            .orElse(null);
-        if (nearest != null) moveToward(nearest.getX(), nearest.getZ(), this::releaseMovement);
-        else releaseMovement();
-    }
-
-    private void repairMend() {
-        releaseMovement();
-
-        if (mc.gui.screen() != null) {
-            mc.gui.screen().onClose();
-            return;
-        }
-
-        ItemStack worn = mc.player.getItemBySlot(EquipmentSlot.CHEST);
-        if (elytraNeedsMend(worn)) {
-            mendWornElytra(worn);
-            return;
-        }
-
-        int loose = -1;
-        for (int i = 0; i < PLAYER_INVENTORY_SLOTS; i++) {
-            if (elytraNeedsMend(mc.player.getInventory().getItem(i))) {
-                loose = i;
-                break;
-            }
-        }
-
-        if (loose != -1) {
-            swapInventoryElytraWithChestSlot(loose);
-            repairLastDamage = -1;
-            repairThrowsWithoutProgress = 0;
-            actionDelayTicks = Math.max(1, inventoryDelay.get());
-            return;
-        }
-
-        finishMend();
-    }
-
-    private void mendWornElytra(ItemStack worn) {
-        int missing = worn.getDamageValue() - allowedElytraDamage(worn);
-        int pending = pendingRepairDurability();
-        if (missing <= pending) {
-            // Orbs that never reach the player would otherwise hold the repair forever.
-            if (++repairPendingTicks <= REPAIR_PENDING_TIMEOUT) return;
-            pending = 0;
-        } else {
-            repairPendingTicks = 0;
-        }
-
-        if (repairLastDamage == -1 || worn.getDamageValue() < repairLastDamage) {
-            repairLastDamage = worn.getDamageValue();
-            repairThrowsWithoutProgress = 0;
-            repairPendingTicks = 0;
-        } else if (repairThrowsWithoutProgress >= 6 && pending == 0) {
-            warning("The XP is not repairing the elytra (no Mending, or another Mending item absorbed it). Stopping repair.");
-            repairSuppressed = true;
-            finishMend();
-            return;
-        }
-
-        FindItemResult bottle = InvUtils.find(stack -> stack.is(Items.EXPERIENCE_BOTTLE), 0, PLAYER_INVENTORY_SLOTS - 1);
-        if (!bottle.found()) {
-            warning("Out of XP bottles.");
-            finishMend();
-            return;
-        }
-
-        int slot = bottle.slot();
-        repairThrowsWithoutProgress++;
-        actionDelayTicks = repairThrowDelay.get();
-        Rotations.rotate(mc.player.getYRot(), 90, () -> {
-            InventoryManager.swapTo(slot, false, true);
-            mc.gameMode.useItem(mc.player, InteractionHand.MAIN_HAND);
-            InventoryManager.swapBack(false);
-        });
-    }
-
-    /** Durability that nearby orbs and in-flight bottles will still repair (Mending: 2 per XP, bottle about 7 XP). */
-    private int pendingRepairDurability() {
-        int pending = 0;
-        for (Entity entity : mc.level.getEntities(mc.player, mc.player.getBoundingBox().inflate(8))) {
-            if (entity instanceof ExperienceOrb orb) pending += orb.getValue() * 2;
-            else if (entity instanceof ThrownExperienceBottle) pending += 14;
-        }
-        return pending;
-    }
-
-    private void swapInventoryElytraWithChestSlot(int inventorySlot) {
-        THMUtils.fakeInventoryOpen(true);
-        try {
-            int syncId = mc.player.containerMenu.containerId;
-            int spareId = SlotUtils.indexToId(inventorySlot);
-            int chestId = SlotUtils.indexToId(CHEST_SLOT_INDEX);
-
-            mc.gameMode.handleContainerInput(syncId, spareId, 0, ContainerInput.PICKUP, mc.player);
-            mc.gameMode.handleContainerInput(syncId, chestId, 0, ContainerInput.PICKUP, mc.player);
-            mc.gameMode.handleContainerInput(syncId, spareId, 0, ContainerInput.PICKUP, mc.player);
-
-            if (!mc.player.containerMenu.getCarried().isEmpty()) clearCursorAfterSwap();
-        } finally {
-            THMUtils.fakeInventoryOpen(false);
-        }
-    }
-
-    /** Leaves the most durable elytra on, then heads to the shulker/chest clean-up. */
-    private void finishMend() {
-        ItemStack worn = mc.player.getItemBySlot(EquipmentSlot.CHEST);
-        int bestSlot = -1;
-        int bestRemaining = worn.is(Items.ELYTRA) ? elytraRemaining(worn) : -1;
-        for (int i = 0; i < PLAYER_INVENTORY_SLOTS; i++) {
-            ItemStack stack = mc.player.getInventory().getItem(i);
-            if (!stack.is(Items.ELYTRA) || elytraRemaining(stack) <= bestRemaining) continue;
-            bestRemaining = elytraRemaining(stack);
-            bestSlot = i;
-        }
-
-        if (bestSlot != -1) swapInventoryElytraWithChestSlot(bestSlot);
-        actionDelayTicks = Math.max(1, inventoryDelay.get());
-
-        boolean returnIt = returnShulker.get() && repairShulkerKey != null && repairChestPos != null && !repairFailed;
-        if (returnIt) setRepairStep(RepairStep.RETURN_OPEN);
-        else setRepairStep(repairChestPlaced ? RepairStep.CHEST_BREAK : RepairStep.DONE);
-    }
-
-    private void repairReturnShulker() {
-        if (mc.gui.screen() == null || mc.player.containerMenu == null) {
-            setRepairStep(RepairStep.RETURN_OPEN);
-            return;
-        }
-
-        int slot = findShulkerByKey(repairShulkerKey, false);
-        if (slot == -1) {
-            setRepairStep(RepairStep.RETURN_CLOSE);
-            return;
-        }
-
-        if (++repairTicks > 15) {
-            warning("The Ender Chest has no room for the XP shulker; it stays in your inventory.");
-            setRepairStep(RepairStep.RETURN_CLOSE);
-            return;
-        }
-
-        InvUtils.shiftClick().slot(slot);
-        actionDelayTicks = inventoryDelay.get();
-    }
-
-    private void repairBreakChest() {
-        if (mc.gui.screen() != null) {
-            mc.gui.screen().onClose();
-            return;
-        }
-
-        if (repairChestPos == null || !repairChestPlaced || !mc.level.getBlockState(repairChestPos).is(Blocks.ENDER_CHEST)) {
-            setRepairStep(repairChestPlaced ? RepairStep.CHEST_PICKUP : RepairStep.DONE);
-            return;
-        }
-
-        int tool = findSilkTouchPickaxeSlot();
-        if (tool == -1) {
-            warning("No Silk Touch pickaxe found. Leaving the Ender Chest where it is.");
-            setRepairStep(RepairStep.DONE);
-            return;
-        }
-
-        if (!SlotUtils.isHotbar(tool)) {
-            if (++repairTicks > 20) {
-                warning("Could not move the pickaxe to the hotbar. Leaving the Ender Chest where it is.");
-                setRepairStep(RepairStep.DONE);
-                return;
-            }
-
-            InvUtils.move().from(tool).toHotbar(findRepairHotbarSlot());
-            if (!clearCursorStackToEmptySlot()) {
-                warning("Unable to clear the cursor. Leaving the Ender Chest where it is.");
-                setRepairStep(RepairStep.DONE);
-                return;
-            }
-            actionDelayTicks = Math.max(1, inventoryDelay.get());
-            return;
-        }
-
-        if (++repairTicks > 400) {
-            warning("The Ender Chest could not be broken. Leaving it where it is.");
-            setRepairStep(RepairStep.DONE);
-            return;
-        }
-
-        InvUtils.swap(tool, true);
-        BlockUtils.breakBlock(repairChestPos, true);
-    }
-
-    private void repairPickupChest() {
-        InvUtils.swapBack();
-
-        if (InvUtils.find(Items.ENDER_CHEST).count() >= repairChestCount) {
-            releaseMovement();
-            setRepairStep(RepairStep.DONE);
-            return;
-        }
-
-        if (++repairTicks > SHULKER_PICKUP_TIMEOUT * 2) {
-            releaseMovement();
-            warning("The Ender Chest was not picked up in time; it is lying on the ground nearby.");
-            setRepairStep(RepairStep.DONE);
-            return;
-        }
-
-        AABB area = mc.player.getBoundingBox().inflate(SHULKER_PICKUP_SEARCH_RADIUS, 2.0, SHULKER_PICKUP_SEARCH_RADIUS);
-        ItemEntity nearest = mc.level.getEntitiesOfClass(ItemEntity.class, area, entity -> entity.isAlive() && entity.getItem().is(Items.ENDER_CHEST))
-            .stream()
-            .min(Comparator.comparingDouble(entity -> mc.player.distanceToSqr(entity.getX(), entity.getY(), entity.getZ())))
-            .orElse(null);
-        if (nearest != null) moveToward(nearest.getX(), nearest.getZ(), this::releaseMovement);
-        else releaseMovement();
-    }
-
-    private void repairCleanup() {
-        if (mc.player.containerMenu != null && !mc.player.containerMenu.getCarried().isEmpty()) {
-            clearCursorAfterSwap();
-            actionDelayTicks = inventoryDelay.get();
-            return;
-        }
-
-        if (mc.gui.screen() != null) {
-            mc.gui.screen().onClose();
-            actionDelayTicks = inventoryDelay.get();
-            return;
-        }
-
-        if (repairShulkerPos != null && mc.level.getBlockState(repairShulkerPos).getBlock() instanceof ShulkerBoxBlock) {
-            setRepairStep(RepairStep.SHULKER_BREAK);
-            return;
-        }
-
-        if (repairChestPlaced && repairChestPos != null && mc.level.getBlockState(repairChestPos).is(Blocks.ENDER_CHEST)) {
-            setRepairStep(RepairStep.CHEST_BREAK);
-            return;
-        }
-
-        setRepairStep(RepairStep.DONE);
-    }
-
-    private void finishRepair() {
-        InvUtils.swapBack();
-        releaseMovement();
-        if (mc.gui.screen() != null) mc.gui.screen().onClose();
-
-        if (needsRepair()) repairSuppressed = true;
-
-        restockPad = null;
-        resetRestockPadSearch();
-        resetRepairRuntime();
-
-        if (isInsideArrivalRadius()) state = State.ARRIVED_WAIT;
-        else state = State.TAKEOFF_AWAIT_GROUND;
-        stateTicks = 0;
-    }
-
-    private int prepareRepairHotbarItem(Item item) {
-        FindItemResult hotbar = InvUtils.findInHotbar(item);
-        if (hotbar.found()) return hotbar.slot();
-
-        FindItemResult inventory = InvUtils.find(item);
-        if (!inventory.found()) return -1;
-
-        InvUtils.move().from(inventory.slot()).toHotbar(findRepairHotbarSlot());
-        if (!clearCursorStackToEmptySlot()) {
-            abortRepair("Unable to clear the cursor after moving an item.");
-            return -1;
-        }
-
-        actionDelayTicks = Math.max(1, inventoryDelay.get());
-        return -1;
-    }
-
-    private int findRepairHotbarSlot() {
-        for (int i = 0; i < 9; i++) {
-            if (mc.player.getInventory().getItem(i).isEmpty()) return i;
-        }
-
-        for (int i = 0; i < 9; i++) {
-            if (!isProtectedRestockHotbarStack(mc.player.getInventory().getItem(i))) return i;
-        }
-
-        return 8;
-    }
-
-    private int findContainerSlot(Predicate<ItemStack> predicate) {
-        int containerSlots = getContainerSlotCount();
-        for (int i = 0; i < containerSlots; i++) {
-            ItemStack stack = mc.player.containerMenu.slots.get(i).getItem();
-            if (!stack.isEmpty() && predicate.test(stack)) return i;
-        }
-        return -1;
-    }
-
-    private BlockPos findNearbyEnderChest() {
-        BlockPos origin = mc.player.blockPosition();
-        BlockPos best = null;
-        double bestDist = Double.MAX_VALUE;
-        for (int dx = -4; dx <= 4; dx++) {
-            for (int dy = -3; dy <= 3; dy++) {
-                for (int dz = -4; dz <= 4; dz++) {
-                    BlockPos pos = origin.offset(dx, dy, dz);
-                    if (!mc.level.getBlockState(pos).is(Blocks.ENDER_CHEST)) continue;
-
-                    double dist = mc.player.distanceToSqr(Vec3.atCenterOf(pos));
-                    if (dist < bestDist && dist <= 20.0) {
-                        bestDist = dist;
-                        best = pos.immutable();
-                    }
-                }
-            }
-        }
-        return best;
-    }
-
-    private BlockPos findShulkerPlacePos() {
-        BlockPos below = mc.player.blockPosition().below();
-        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.Plane.HORIZONTAL) {
-            BlockPos base = below.relative(dir);
-            BlockPos pos = base.above();
-            if (pos.equals(repairChestPos)) continue;
-            if (!isValidPadBase(base)) continue;
-            if (!mc.level.getBlockState(pos.above()).isAir()) continue;
-            return pos;
-        }
-        return null;
-    }
-
-    private int findSilkTouchPickaxeSlot() {
-        for (int i = 0; i < PLAYER_INVENTORY_SLOTS; i++) {
-            ItemStack stack = mc.player.getInventory().getItem(i);
-            if (stack.isEmpty() || !Utils.hasEnchantment(stack, Enchantments.SILK_TOUCH)) continue;
-            if (stack.getDestroySpeed(Blocks.ENDER_CHEST.defaultBlockState()) > 1.0f) return i;
-        }
-        return -1;
-    }
-
-    private int countXpBottlesInShulker(ItemStack shulker) {
-        if (!isShulkerBox(shulker)) return 0;
-        ItemContainerContents container = shulker.get(DataComponents.CONTAINER);
-        if (container == null) return 0;
-
-        int count = 0;
-        for (ItemStack stack : container.nonEmptyItemCopyStream().toList()) {
-            if (stack.is(Items.EXPERIENCE_BOTTLE)) count += stack.getCount();
-        }
-        return count;
-    }
-
-    private int findInventoryXpShulker() {
-        int best = -1;
-        int bestCount = 0;
-        for (int i = 0; i < PLAYER_INVENTORY_SLOTS; i++) {
-            int count = countXpBottlesInShulker(mc.player.getInventory().getItem(i));
-            if (count > bestCount) {
-                bestCount = count;
-                best = i;
-            }
-        }
-        return best;
-    }
-
-    /** Identifies a shulker by colour and everything except its XP bottles, so it can be found again after looting. */
-    private String nonXpKey(ItemStack shulker) {
-        List<String> entries = new ArrayList<>();
-        ItemContainerContents container = shulker.get(DataComponents.CONTAINER);
-        if (container != null) {
-            for (ItemStack stack : container.nonEmptyItemCopyStream().toList()) {
-                if (stack.is(Items.EXPERIENCE_BOTTLE)) continue;
-                entries.add(BuiltInRegistries.ITEM.getKey(stack.getItem()) + "x" + stack.getCount());
-            }
-        }
-
-        Collections.sort(entries);
-        return BuiltInRegistries.ITEM.getKey(shulker.getItem()) + "|" + String.join(",", entries);
-    }
-
-    private int findShulkerByKey(String key, boolean requireBottles) {
-        if (key == null) return -1;
-        for (int i = 0; i < PLAYER_INVENTORY_SLOTS; i++) {
-            ItemStack stack = mc.player.getInventory().getItem(i);
-            if (!isShulkerBox(stack) || !key.equals(nonXpKey(stack))) continue;
-            if (requireBottles && countXpBottlesInShulker(stack) <= 0) continue;
-            return i;
-        }
-        return -1;
     }
 }
